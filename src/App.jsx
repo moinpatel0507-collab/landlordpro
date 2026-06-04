@@ -76,6 +76,32 @@ const BUILT_IN_TEMPLATES = [
   {id:"bi-7",name:"End of Tenancy – Deposit Return",category:"notice",subject:"End of Tenancy & Deposit Return – [PROPERTY_ADDRESS]",body:"Dear [TENANT_NAME],\n\nThank you for your tenancy at [PROPERTY_ADDRESS]. Your deposit of [DEPOSIT_AMOUNT] will be returned in full / less deductions of [DEDUCTION_AMOUNT] for [DEDUCTION_REASON]. The balance of [RETURN_AMOUNT] will be returned via [DEPOSIT_SCHEME] within 10 days.\n\nKind regards,\n[LANDLORD_NAME]",builtin:true},
 ];
 
+
+const MAINT_CATS = [
+  {id:"plumbing",   label:"Plumbing",    icon:"🚿"},
+  {id:"electrical", label:"Electrical",  icon:"⚡"},
+  {id:"gas",        label:"Gas/Heating", icon:"🔥"},
+  {id:"structural", label:"Structural",  icon:"🏗️"},
+  {id:"decoration", label:"Decoration",  icon:"🎨"},
+  {id:"garden",     label:"Garden",      icon:"🌿"},
+  {id:"appliances", label:"Appliances",  icon:"🍳"},
+  {id:"security",   label:"Security",    icon:"🔒"},
+  {id:"cleaning",   label:"Cleaning",    icon:"🧹"},
+  {id:"other",      label:"Other",       icon:"🔧"},
+];
+const MAINT_PRIORITY = [
+  {id:"urgent",label:"Urgent", color:"#E53E3E"},
+  {id:"high",  label:"High",   color:"#E8A838"},
+  {id:"normal",label:"Normal", color:"#2D5BE3"},
+  {id:"low",   label:"Low",    color:"#6B7C93"},
+];
+const MAINT_STATUS = [
+  {id:"reported",   label:"Reported",    color:"#E8A838", next:"assigned"},
+  {id:"assigned",   label:"Assigned",    color:"#2D5BE3", next:"in_progress"},
+  {id:"in_progress",label:"In Progress", color:"#7C3AED", next:"complete"},
+  {id:"complete",   label:"Complete",    color:"#2AAE7F", next:"closed"},
+  {id:"closed",     label:"Closed",      color:"#6B7C93", next:null},
+];
 const CONTRACTOR_TRADES = [
   "Plumber","Electrician","Gas Engineer","Carpenter & Joiner",
   "Painter & Decorator","Roofer","General Builder","Locksmith",
@@ -557,21 +583,26 @@ function useWinSize(){
 // PAGE: AUTH
 // ══════════════════════════════════════════════════════════════════
 function AuthPage({ db, save, setUser, showToast }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // "login" | "register" | "forgot"
   const [f, setF] = useState({ name:"",email:"",phone:"",password:"",confirm:"" });
-  const [err, setErr] = useState("");
+  const [err, setErr]   = useState("");
+  const [busy, setBusy] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotDone,  setForgotDone]  = useState(false);
+  const [forgotFound, setForgotFound] = useState(null); // landlord object if found
+  const [newPwReset,  setNewPwReset]  = useState("");
+  const [resetDone,   setResetDone]   = useState(false);
   const upd = k => e => setF(x=>({...x,[k]:e.target.value}));
+  const inp  = { width:"100%",padding:"12px 14px",border:"1.5px solid #D5E0EE",borderRadius:10,fontSize:14,color:"#1B2B4B",background:"white",outline:"none" };
 
   const doLogin = async () => {
-    setErr("");
-    // Built-in system accounts — compare directly (not stored in user data)
+    setErr(""); setBusy(true);
     if (f.email === ADMIN_USER.email && f.password === ADMIN_USER.password) {
-      setUser(ADMIN_USER); showToast("Welcome back, Administrator!"); return;
+      setUser(ADMIN_USER); showToast("Welcome back, Administrator!"); setBusy(false); return;
     }
     if (f.email === DEMO_LANDLORD.email && f.password === DEMO_LANDLORD.password) {
-      setUser(DEMO_LANDLORD); showToast("Welcome! You're using the demo account."); return;
+      setUser(DEMO_LANDLORD); showToast("Welcome! You're using the demo account."); setBusy(false); return;
     }
-    // Registered landlords — try hash first, then plaintext (auto-upgrades old accounts)
     let hashed = f.password;
     try { hashed = await hashPassword(f.password); } catch {}
     const found = (db.landlords||[]).find(l =>
@@ -579,21 +610,20 @@ function AuthPage({ db, save, setUser, showToast }) {
       (l.password === hashed || l.password === f.password)
     );
     if (found) {
-      // Auto-upgrade legacy plaintext to hash
-      if (found.password === f.password && found.password !== hashed) {
+      if (found.password === f.password && found.password !== hashed)
         save("landlords", (db.landlords||[]).map(l => l.id===found.id ? {...l,password:hashed} : l));
-      }
       setUser(found); showToast(`Welcome back, ${found.name}!`);
     } else {
       setErr("Invalid email or password. Please try again.");
     }
+    setBusy(false);
   };
 
   const doRegister = async () => {
     setErr("");
     if (!f.name||!f.email||!f.password) { setErr("Name, email and password are required."); return; }
-    if (f.password !== f.confirm) { setErr("Passwords do not match."); return; }
-    if (f.password.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (f.password !== f.confirm)        { setErr("Passwords do not match."); return; }
+    if (f.password.length < 6)           { setErr("Password must be at least 6 characters."); return; }
     if ((db.landlords||[]).find(l=>l.email.toLowerCase()===f.email.toLowerCase())) { setErr("Email already registered."); return; }
     const hashed = await hashPassword(f.password);
     const nl = { id:uid(), name:f.name, email:f.email, phone:f.phone||"", password:hashed, role:"landlord", createdAt:today() };
@@ -601,13 +631,28 @@ function AuthPage({ db, save, setUser, showToast }) {
     setUser(nl); showToast(`Welcome to LandlordPro, ${nl.name}!`);
   };
 
-  const inp = { width:"100%",padding:"12px 14px",border:"1.5px solid #D5E0EE",borderRadius:10,fontSize:14,color:"#1B2B4B",background:"white",outline:"none" };
+  const doForgot = () => {
+    setForgotDone(false); setForgotFound(null); setResetDone(false); setNewPwReset("");
+    const found = (db.landlords||[]).find(l => l.email.toLowerCase() === forgotEmail.toLowerCase());
+    setForgotDone(true);
+    setForgotFound(found || null);
+  };
+
+  const doSelfReset = async () => {
+    if (!newPwReset || newPwReset.length < 6) { return; }
+    if (!forgotFound) return;
+    const hashed = await hashPassword(newPwReset);
+    save("landlords", (db.landlords||[]).map(l => l.id===forgotFound.id ? {...l,password:hashed} : l));
+    setResetDone(true);
+    showToast("Password reset! Please sign in.");
+  };
+
+  const goLogin = () => { setMode("login"); setErr(""); setForgotEmail(""); setForgotDone(false); setForgotFound(null); setResetDone(false); setNewPwReset(""); };
 
   return (
     <div style={{minHeight:"100vh",display:"flex",fontFamily:"'DM Sans',system-ui,sans-serif"}}>
       {/* Left hero */}
       <div style={{flex:1,background:"linear-gradient(155deg,#080F1E 0%,#0D1C38 40%,#142B5A 100%)",display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",padding:"40px 60px",position:"relative",overflow:"hidden"}}>
-        {/* Decorative rings */}
         {[350,280,210,140].map((s,i)=>(
           <div key={i} style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:s+"%",height:s+"%",border:`1px solid rgba(232,168,56,${0.04+i*0.02})`,borderRadius:"50%",pointerEvents:"none"}} />
         ))}
@@ -615,14 +660,11 @@ function AuthPage({ db, save, setUser, showToast }) {
           <div style={{width:80,height:80,background:"linear-gradient(135deg,#E8A838,#F4C56A)",borderRadius:24,display:"flex",alignItems:"center",justifyContent:"center",fontSize:38,margin:"0 auto 28px",boxShadow:"0 12px 40px rgba(232,168,56,.4)"}}>🏠</div>
           <h1 style={{fontFamily:"Playfair Display,serif",fontSize:44,fontWeight:700,color:"white",lineHeight:1.1,marginBottom:6}}>LandlordPro</h1>
           <div style={{color:"#E8A838",fontSize:11,fontWeight:700,letterSpacing:"4px",textTransform:"uppercase",marginBottom:28}}>UK Property Management</div>
-          <p style={{color:"rgba(255,255,255,.65)",fontSize:15,lineHeight:1.85,marginBottom:36}}>
-            Your complete private landlord portal. Manage properties, track certificates, collect rent and generate legally compliant Section 8 & 13 notices — all in one secure place.
-          </p>
+          <p style={{color:"rgba(255,255,255,.65)",fontSize:15,lineHeight:1.85,marginBottom:36}}>Your complete private landlord portal. Manage properties, track certificates, collect rent and generate legally compliant Section 8 &amp; 13 notices — all in one secure place.</p>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             {[["🏢","Property & Tenancy"],["📋","Certificate Tracking"],["💷","Rent Collection"],["📄","Section 8 & 13"],["🔔","Smart Reminders"],["📊","Reports & Analytics"]].map(([ic,lb])=>(
               <div key={lb} style={{background:"rgba(255,255,255,.07)",borderRadius:12,padding:"12px 16px",display:"flex",alignItems:"center",gap:10,textAlign:"left",border:"1px solid rgba(255,255,255,.06)"}}>
-                <span style={{fontSize:20}}>{ic}</span>
-                <span style={{color:"rgba(255,255,255,.8)",fontSize:13,fontWeight:500}}>{lb}</span>
+                <span style={{fontSize:20}}>{ic}</span><span style={{color:"rgba(255,255,255,.8)",fontSize:13,fontWeight:500}}>{lb}</span>
               </div>
             ))}
           </div>
@@ -631,37 +673,86 @@ function AuthPage({ db, save, setUser, showToast }) {
 
       {/* Right form */}
       <div style={{width:480,background:"white",display:"flex",flexDirection:"column",justifyContent:"center",padding:"50px 48px",overflowY:"auto"}}>
-        <div style={{marginBottom:32}}>
-          <h2 style={{fontFamily:"Playfair Display,serif",fontSize:30,fontWeight:700,color:"#1B2B4B",lineHeight:1.15}}>{mode==="login"?"Welcome Back":"Create Account"}</h2>
-          <p style={{color:"#6B7C93",fontSize:14,marginTop:6}}>{mode==="login"?"Sign in to your landlord portal":"Register your LandlordPro account"}</p>
-        </div>
 
-        {err&&<div style={{background:"#FDE8E8",color:"#C53030",padding:"12px 16px",borderRadius:10,marginBottom:20,fontSize:13,fontWeight:500,borderLeft:"3px solid #E53E3E"}}>{err}</div>}
-
-        {mode==="register"&&<>
-          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Full Name *</label><input value={f.name} onChange={upd("name")} placeholder="John Smith" style={inp} /></div>
-          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Phone Number</label><input value={f.phone} onChange={upd("phone")} placeholder="07700 900000" style={inp} /></div>
-        </>}
-
-        <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Email Address *</label><input type="email" value={f.email} onChange={upd("email")} placeholder="landlord@email.co.uk" style={inp} /></div>
-        <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Password *</label><input type="password" value={f.password} onChange={upd("password")} placeholder={mode==="login"?"Your password":"Minimum 6 characters"} style={inp} /></div>
-        {mode==="register"&&<div style={{marginBottom:20}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Confirm Password *</label><input type="password" value={f.confirm} onChange={upd("confirm")} placeholder="Repeat password" style={inp} /></div>}
-
-        <button onClick={mode==="login"?doLogin:doRegister}
-          style={{width:"100%",padding:14,background:"linear-gradient(135deg,#142B5A,#2D5BE3)",color:"white",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:"pointer",letterSpacing:".3px",boxShadow:"0 4px 16px rgba(45,91,227,.35)"}}>
-          {mode==="login"?"Sign In →":"Create Account →"}
-        </button>
-
-        <div style={{textAlign:"center",marginTop:22,fontSize:14}}>
-          {mode==="login" ? <>
+        {/* ── LOGIN ── */}
+        {mode==="login"&&(<>
+          <div style={{marginBottom:28}}>
+            <h2 style={{fontFamily:"Playfair Display,serif",fontSize:30,fontWeight:700,color:"#1B2B4B"}}>Welcome Back</h2>
+            <p style={{color:"#6B7C93",fontSize:14,marginTop:6}}>Sign in to your landlord portal</p>
+          </div>
+          {err&&<div style={{background:"#FDE8E8",color:"#C53030",padding:"12px 16px",borderRadius:10,marginBottom:20,fontSize:13,fontWeight:500,borderLeft:"3px solid #E53E3E"}}>{err}</div>}
+          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Email Address *</label><input type="email" value={f.email} onChange={upd("email")} placeholder="landlord@email.co.uk" style={inp} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
+          <div style={{marginBottom:8}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Password *</label><input type="password" value={f.password} onChange={upd("password")} placeholder="Your password" style={inp} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
+          <div style={{textAlign:"right",marginBottom:24}}>
+            <span onClick={()=>{setMode("forgot");setForgotEmail(f.email);setForgotDone(false);setForgotFound(null);setResetDone(false);}} style={{color:"#2D5BE3",fontSize:13,fontWeight:600,cursor:"pointer"}}>Forgot password?</span>
+          </div>
+          <button onClick={doLogin} disabled={busy} style={{width:"100%",padding:14,background:busy?"#9BAEC8":"linear-gradient(135deg,#142B5A,#2D5BE3)",color:"white",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:busy?"not-allowed":"pointer",boxShadow:"0 4px 16px rgba(45,91,227,.35)"}}>
+            {busy?"Signing in…":"Sign In →"}
+          </button>
+          <div style={{textAlign:"center",marginTop:22,fontSize:14}}>
             <span style={{color:"#6B7C93"}}>Don't have an account? </span>
-            <span onClick={()=>{setMode("register");setErr("");setF({name:"",email:"",phone:"",password:"",confirm:""});}} style={{color:"#2D5BE3",fontWeight:700,cursor:"pointer"}}>Register Free</span>
-          </> : <>
+            <span onClick={()=>{setMode("register");setErr("");setF({name:"",email:"",phone:"",password:"",confirm:""}); }} style={{color:"#2D5BE3",fontWeight:700,cursor:"pointer"}}>Register Free</span>
+          </div>
+        </>)}
+
+        {/* ── REGISTER ── */}
+        {mode==="register"&&(<>
+          <div style={{marginBottom:28}}>
+            <h2 style={{fontFamily:"Playfair Display,serif",fontSize:30,fontWeight:700,color:"#1B2B4B"}}>Create Account</h2>
+            <p style={{color:"#6B7C93",fontSize:14,marginTop:6}}>Register your LandlordPro account</p>
+          </div>
+          {err&&<div style={{background:"#FDE8E8",color:"#C53030",padding:"12px 16px",borderRadius:10,marginBottom:20,fontSize:13,fontWeight:500,borderLeft:"3px solid #E53E3E"}}>{err}</div>}
+          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Full Name *</label><input value={f.name} onChange={upd("name")} placeholder="John Smith" style={inp}/></div>
+          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Phone Number</label><input value={f.phone} onChange={upd("phone")} placeholder="07700 900000" style={inp}/></div>
+          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Email Address *</label><input type="email" value={f.email} onChange={upd("email")} placeholder="you@email.co.uk" style={inp}/></div>
+          <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Password *</label><input type="password" value={f.password} onChange={upd("password")} placeholder="Min 6 characters" style={inp}/></div>
+          <div style={{marginBottom:24}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Confirm Password *</label><input type="password" value={f.confirm} onChange={upd("confirm")} placeholder="Repeat password" style={inp}/></div>
+          <button onClick={doRegister} style={{width:"100%",padding:14,background:"linear-gradient(135deg,#142B5A,#2D5BE3)",color:"white",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:"pointer",boxShadow:"0 4px 16px rgba(45,91,227,.35)"}}>Create Account →</button>
+          <div style={{textAlign:"center",marginTop:22,fontSize:14}}>
             <span style={{color:"#6B7C93"}}>Already registered? </span>
             <span onClick={()=>{setMode("login");setErr("");}} style={{color:"#2D5BE3",fontWeight:700,cursor:"pointer"}}>Sign In</span>
-          </>}
-        </div>
+          </div>
+        </>)}
 
+        {/* ── FORGOT PASSWORD ── */}
+        {mode==="forgot"&&(<>
+          <div style={{marginBottom:28}}>
+            <h2 style={{fontFamily:"Playfair Display,serif",fontSize:30,fontWeight:700,color:"#1B2B4B"}}>Reset Password</h2>
+            <p style={{color:"#6B7C93",fontSize:14,marginTop:6}}>Enter your registered email address</p>
+          </div>
+
+          {!forgotDone&&(<>
+            <div style={{marginBottom:20}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>Email Address</label>
+              <input type="email" value={forgotEmail} onChange={e=>setForgotEmail(e.target.value)} placeholder="your@email.co.uk" style={inp} onKeyDown={e=>e.key==="Enter"&&doForgot()}/>
+            </div>
+            <button onClick={doForgot} style={{width:"100%",padding:14,background:"linear-gradient(135deg,#142B5A,#2D5BE3)",color:"white",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:"pointer"}}>Find My Account →</button>
+          </>)}
+
+          {forgotDone&&!forgotFound&&(<div style={{background:"#FDE8E8",borderRadius:12,padding:"20px 22px",border:"1px solid #F6B2B2"}}>
+            <div style={{fontWeight:700,color:"#C53030",marginBottom:8}}>❌ Email not found</div>
+            <p style={{color:"#C53030",fontSize:14,lineHeight:1.6}}>No account found for <strong>{forgotEmail}</strong>. Check the email or register a new account.</p>
+          </div>)}
+
+          {forgotDone&&forgotFound&&!resetDone&&(<>
+            <div style={{background:"#D4FAE6",borderRadius:12,padding:"16px 20px",marginBottom:20,border:"1px solid #9AE6B4"}}>
+              <div style={{fontWeight:700,color:"#1A7A4A",marginBottom:4}}>✅ Account found</div>
+              <div style={{color:"#276749",fontSize:14}}>Hi <strong>{forgotFound.name}</strong> — set a new password below.</div>
+            </div>
+            <div style={{marginBottom:16}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#1B2B4B",marginBottom:6}}>New Password (min 6 characters)</label>
+              <input type="password" value={newPwReset} onChange={e=>setNewPwReset(e.target.value)} placeholder="Enter new password" style={inp}/>
+            </div>
+            <button onClick={doSelfReset} disabled={newPwReset.length<6} style={{width:"100%",padding:14,background:newPwReset.length<6?"#9BAEC8":"#2AAE7F",color:"white",border:"none",borderRadius:12,fontSize:15,fontWeight:700,cursor:newPwReset.length<6?"not-allowed":"pointer"}}>Set New Password</button>
+          </>)}
+
+          {resetDone&&(<div style={{background:"#D4FAE6",borderRadius:12,padding:"20px 22px",border:"1px solid #9AE6B4"}}>
+            <div style={{fontWeight:700,color:"#1A7A4A",fontSize:16,marginBottom:8}}>✅ Password reset!</div>
+            <p style={{color:"#276749",fontSize:14,lineHeight:1.6}}>Your password has been updated. You can now sign in with your new password.</p>
+          </div>)}
+
+          <div style={{textAlign:"center",marginTop:24}}>
+            <span onClick={goLogin} style={{color:"#2D5BE3",fontWeight:700,cursor:"pointer",fontSize:14}}>← Back to Sign In</span>
+          </div>
+        </>)}
 
       </div>
     </div>
@@ -753,6 +844,37 @@ function DashboardPage({ ctx }) {
         </Card>
 
         <div style={{display:"flex",flexDirection:"column",gap:20}}>
+
+          {/* Renewal Alerts */}
+          {(()=>{const ra=(myData.tenancies||[]).filter(t=>{if(t.status!=="active"||!t.endDate)return false;const d=daysTo(t.endDate);return d!==null&&d>=0&&d<=60;});if(!ra.length)return null;return(<Card style={{border:"1px solid #FBD38D"}}><div style={{fontWeight:700,color:"#C05621",fontSize:15,marginBottom:12}}>📅 {ra.length} Tenancy Renewal{ra.length>1?"s":""} Due</div><div style={{display:"flex",flexDirection:"column",gap:8}}>{ra.map(t=>{const prop=(myData.properties||[]).find(p=>p.id===t.propertyId);const d=daysTo(t.endDate);return(<div key={t.id} style={{background:"#FEEBC8",borderRadius:10,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><div><div style={{fontWeight:600,color:"#1B2B4B",fontSize:13}}>{t.tenantName} — {prop?.address||"–"}</div><div style={{fontSize:12,color:"#C05621"}}>Ends {fmt(t.endDate)} ({d===0?"today":`in ${d} day${d===1?"":"s"}`})</div></div><div style={{display:"flex",gap:6}}><button onClick={()=>setPage("tenancies")} style={{...T.gol,padding:"5px 12px",fontSize:12}}>Manage</button><button onClick={()=>setPage("notices")} style={{...T.sec,padding:"5px 12px",fontSize:12}}>Notice</button></div></div>);})}</div></Card>);})()}
+
+          {/* Property Overview Cards */}
+          {(myData.properties||[]).length>0&&(<div>
+            <div style={{fontFamily:"Playfair Display,serif",fontSize:16,fontWeight:700,color:"var(--text)",marginBottom:12}}>Property Overview</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:12}}>
+              {(myData.properties||[]).slice(0,6).map(p=>{
+                const actTen=(myData.tenancies||[]).filter(t=>t.propertyId===p.id&&t.status==="active");
+                const overdue=(myData.payments||[]).filter(x=>x.propertyId===p.id&&(x.status==="overdue"||(x.status==="due"&&new Date(x.dueDate)<new Date()))).length;
+                const badCerts=(myData.certs||[]).filter(c=>c.propertyId===p.id&&daysTo(c.expiryDate)!==null&&daysTo(c.expiryDate)<0).length;
+                const openMaint=(myData.maintenance||[]).filter(m=>m.propertyId===p.id&&m.status!=="closed").length;
+                const vacant=actTen.length===0;
+                return(<div key={p.id} onClick={()=>setPage("properties")} style={{background:"var(--card)",borderRadius:12,padding:"14px 16px",border:`1px solid ${vacant?"rgba(229,62,62,.2)":overdue>0?"rgba(232,168,56,.3)":"var(--border2)"}`,cursor:"pointer",boxShadow:"var(--card-shadow)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                    <span style={{fontSize:20}}>🏠</span>
+                    <span style={{background:vacant?"#FDE8E8":overdue>0?"#FEEBC8":"#D4FAE6",color:vacant?"#C53030":overdue>0?"#C05621":"#1A7A4A",fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:6}}>{vacant?"VACANT":overdue>0?`${overdue} OVERDUE`:"ACTIVE"}</span>
+                  </div>
+                  <div style={{fontWeight:700,color:"var(--text)",fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:4}}>{p.address}</div>
+                  <div style={{fontSize:12,color:"var(--text2)",marginBottom:8}}>{actTen.length>0?actTen[0].tenantName:"No active tenant"}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {openMaint>0&&<span style={{background:"#FDE8E8",color:"#C53030",fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:5}}>🛠️ {openMaint}</span>}
+                    {badCerts>0&&<span style={{background:"#FDE8E8",color:"#C53030",fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:5}}>📋 {badCerts}</span>}
+                    <span style={{background:"var(--subtle2)",color:"var(--text2)",fontSize:10,padding:"2px 6px",borderRadius:5}}>£{Number(p.monthlyRent||0).toFixed(0)}/mo</span>
+                  </div>
+                </div>);
+              })}
+            </div>
+          </div>)}
+
           {/* Quick actions */}
           <Card>
             <div style={{fontFamily:"Playfair Display,serif",fontSize:18,fontWeight:700,color:"#1B2B4B",marginBottom:16}}>Quick Actions</div>
@@ -766,6 +888,7 @@ function DashboardPage({ ctx }) {
                 {label:"SA105 Tax Summary",icon:"🧾",pg:"sa105",col:"#D97706"},
                 {label:"Void Periods",icon:"🏚️",pg:"voids",col:"#C05621"},
                 {label:"Contractors",icon:"🔧",pg:"contractors",col:"#7C3AED"},
+                {label:"Maintenance",icon:"🛠️",pg:"maintenance",col:"#C05621"},
                 {label:"Legal Notice",icon:"📄",pg:"notices",col:"#C53030"},
               ].map(a=>(
                 <button key={a.pg} onClick={()=>setPage(a.pg)}
@@ -955,13 +1078,14 @@ function TenanciesPage({ ctx }) {
                     <td><div style={{fontWeight:600,color:"#1B2B4B"}}>{t.tenantName}</div><div style={{color:"#6B7C93",fontSize:12}}>{t.tenantEmail||"–"}</div></td>
                     <td><div style={{color:"#4A5568",fontSize:13}}>{prop?.address||"–"}</div>{t.room&&<div style={{color:"#7C3AED",fontSize:12,fontWeight:600}}>Room: {t.room}</div>}</td>
                     <td style={{color:"#4A5568"}}>{fmt(t.startDate)}</td>
-                    <td>{t.endDate?fmt(t.endDate):<span style={{color:"#2AAE7F",fontWeight:600,fontSize:12}}>Periodic</span>}</td>
+                    <td>{t.endDate?(()=>{const d=daysTo(t.endDate);return(<span>{fmt(t.endDate)}{d!==null&&d>=0&&d<=60&&<span style={{background:"#FEEBC8",color:"#C05621",fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:5,marginLeft:6}}>⏰ Due</span>}</span>);})():<span style={{color:"#2AAE7F",fontWeight:600,fontSize:12}}>Periodic</span>}</td>
                     <td style={{fontWeight:700,color:"#2D5BE3"}}>{gbp(t.rentAmount)}</td>
                     <td>{gbp(t.depositAmount||0)}</td>
                     <td><Bdg s={t.status||"active"} /></td>
                     <td style={{textAlign:"right"}}>
                       <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
                         {t.tenantEmail&&<button onClick={()=>openEmail(t.tenantEmail,"Re: "+prop?.address,"Dear "+t.tenantName+",\n\n")} style={{...T.sec,padding:"5px 10px",fontSize:12}}>✉️</button>}
+                        <button onClick={()=>{const pays=myData.payments.filter(p=>p.tenancyId===t.id);generateRentalStatement({tenancy:t,payments:pays,prop,landlord:myData.landlords?.[0]||ctx.user,fromDate:"",toDate:""});}} style={{...T.sec,padding:"5px 10px",fontSize:12}}>📄</button>
                         <button onClick={()=>openEdit(t)} style={{...T.sec,padding:"5px 12px",fontSize:12}}>Edit</button>
                         {t.status==="active"&&<button onClick={()=>endTenancy(t.id)} style={T.dan}>End</button>}
                       </div>
@@ -1008,6 +1132,7 @@ function RentPage({ ctx }) {
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [stmtModal, setStmtModal] = useState(false);
   const blank = { tenancyId:"",amount:"",dueDate:today(),paidDate:"",status:"due",notes:"" };
   const [f, setF] = useState(blank);
   const upd = k => e => setF(x=>({...x,[k]:e.target.value}));
@@ -1048,6 +1173,7 @@ function RentPage({ ctx }) {
     <div>
       <PH title="Rent Ledger" sub="Track all rent payments across your portfolio"
         right={<div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          <button onClick={()=>setStmtModal(true)} style={T.sec}>📄 Statement</button>
           <button onClick={()=>{const n=autoGenerateRent(db,save);showToast(n?`✓ Generated ${n} rent entr${n===1?"y":"ies"}`:"All entries up to date");}} style={T.sec}>⟳ Auto-Fill</button>
           <button onClick={openAdd} style={T.pri} disabled={actTens.length===0}>+ Record Payment</button>
         </div>} />
@@ -1117,6 +1243,7 @@ function RentPage({ ctx }) {
           <button onClick={doSave} style={T.pri}>{editing?"Save Changes":"Record Payment"}</button>
         </div>
       </Modal>
+      <RentalStatementModal open={stmtModal} onClose={()=>setStmtModal(false)} ctx={ctx}/>
     </div>
   );
 }
@@ -1720,9 +1847,23 @@ function ReportsPage({ ctx }) {
 // PAGE: ADMIN PORTAL
 // ══════════════════════════════════════════════════════════════════
 function AdminPage({ ctx }) {
-  const { db, save, showToast } = ctx;
-  const [tab, setTab]           = useState("overview");
-  const [delLandlord, setDelLandlord] = useState(null);
+  const { db, save, reloadDb, showToast } = ctx;
+  const [tab, setTab]                = useState("overview");
+  const [delLandlord, setDelLandlord]= useState(null);
+  const [resetLandlord, setResetLandlord] = useState(null);
+  const [newPw, setNewPw]            = useState("");
+
+  const doResetPw = async () => {
+    if (!newPw || newPw.length < 6) { showToast("Min 6 characters.", "error"); return; }
+    let hashed = newPw;
+    try {
+      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(newPw));
+      hashed = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+    } catch {}
+    save("landlords", (db.landlords||[]).map(l=>l.id===resetLandlord.id?{...l,password:hashed}:l));
+    setResetLandlord(null); setNewPw("");
+    showToast(`✓ Password reset for ${resetLandlord.name}`);
+  };
 
   const stats = {
     landlords: (db.landlords||[]).length,
@@ -1731,10 +1872,11 @@ function AdminPage({ ctx }) {
     payments:  (db.payments||[]).length,
     income:    (db.payments||[]).filter(p=>p.status==="paid").reduce((s,p)=>s+Number(p.amount||0),0),
     certs:     (db.certs||[]).length,
+    maintenance:(db.maintenance||[]).filter(m=>m.status!=="closed").length,
   };
 
   const removeLandlord = id => {
-    ["landlords","properties","tenancies","payments","certs","notices","reminders","expenses","inventory","templates","contractors","voids","documents","rtr","inspections","recurring"].forEach(k=>{
+    ["landlords","properties","tenancies","payments","certs","notices","reminders","expenses","inventory","templates","contractors","voids","documents","rtr","inspections","recurring","maintenance"].forEach(k=>{
       save(k,(db[k]||[]).filter(x=>(x.landlordId||x.id)!==id&&x.id!==id));
     });
     setDelLandlord(null);
@@ -1743,7 +1885,8 @@ function AdminPage({ ctx }) {
 
   return (
     <div>
-      <PH title="⚙️ Admin Portal" sub="System-wide overview and landlord management" />
+      <PH title="⚙️ Admin Portal" sub="System-wide overview and landlord management"
+        right={<button onClick={reloadDb} style={{...T.sec,display:"flex",alignItems:"center",gap:8}}>🔄 Refresh Data</button>} />
 
       <div style={{background:"#FDE8E8",border:"1px solid #F6B2B2",borderRadius:12,padding:"12px 20px",marginBottom:24,fontSize:13,color:"#C53030",fontWeight:500}}>
         🔒 Admin access — you are viewing all landlord data system-wide. Use with care.
@@ -1787,20 +1930,25 @@ function AdminPage({ ctx }) {
 
       {tab==="landlords"&&(
         <Card>
-          <div style={{fontFamily:"Playfair Display,serif",fontSize:18,fontWeight:700,color:"#1B2B4B",marginBottom:16}}>Registered Landlords ({(db.landlords||[]).length})</div>
-          {(db.landlords||[]).length===0?<Empty icon="👤" title="No landlords" sub="" />:(
+          <div style={{fontFamily:"Playfair Display,serif",fontSize:18,fontWeight:700,color:"var(--text)",marginBottom:16}}>Registered Landlords ({(db.landlords||[]).length})</div>
+          {(db.landlords||[]).length===0?<Empty icon="👤" title="No landlords registered yet" sub="Landlords appear here when they sign up" />:(
             <div style={{overflowX:"auto"}}>
               <table>
-                <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Joined</th><th style={{textAlign:"right"}}>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Joined</th><th>Properties</th><th style={{textAlign:"right"}}>Actions</th></tr></thead>
                 <tbody>
                   {(db.landlords||[]).map(l=>(
                     <tr key={l.id}>
                       <td style={{fontWeight:600}}>{l.name}</td>
-                      <td style={{color:"#6B7C93",fontSize:13}}>{l.email}</td>
+                      <td style={{color:"var(--text2)",fontSize:13}}>{l.email}</td>
                       <td>{l.phone||"–"}</td>
-                      <td>{l.company||"–"}</td>
-                      <td style={{fontSize:13,color:"#6B7C93"}}>{fmt(l.createdAt)}</td>
-                      <td style={{textAlign:"right"}}><button onClick={()=>setDelLandlord(l)} style={T.dan}>Remove</button></td>
+                      <td style={{fontSize:13,color:"var(--text2)"}}>{fmt(l.createdAt)}</td>
+                      <td style={{fontWeight:700,color:"#2D5BE3"}}>{(db.properties||[]).filter(p=>p.landlordId===l.id).length}</td>
+                      <td style={{textAlign:"right"}}>
+                        <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                          <button onClick={()=>{setResetLandlord(l);setNewPw("");}} style={{...T.sec,padding:"5px 12px",fontSize:12}}>🔑 Reset PW</button>
+                          <button onClick={()=>setDelLandlord(l)} style={T.dan}>Remove</button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1809,6 +1957,28 @@ function AdminPage({ ctx }) {
           )}
         </Card>
       )}
+
+      {/* Reset Password Modal */}
+      <Modal open={!!resetLandlord} onClose={()=>setResetLandlord(null)} title="Reset Landlord Password" width={420}>
+        {resetLandlord&&(<>
+          <div style={{background:"var(--subtle)",borderRadius:10,padding:"14px 16px",marginBottom:16,border:"1px solid var(--border2)"}}>
+            <div style={{fontSize:12,color:"var(--text2)",fontWeight:600,marginBottom:4}}>Resetting password for</div>
+            <div style={{fontWeight:700,color:"var(--text)",fontSize:15}}>{resetLandlord.name}</div>
+            <div style={{color:"var(--text2)",fontSize:13}}>{resetLandlord.email}</div>
+          </div>
+          <Fld label="New Password (min 6 characters)" required>
+            <input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)}
+              placeholder="Enter new password" style={T.inp}/>
+          </Fld>
+          <div style={{background:"#FEEBC8",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#C05621",border:"1px solid #F6BE5A"}}>
+            ⚠️ Tell the landlord their new password — they should change it immediately in their Profile.
+          </div>
+          <div style={{display:"flex",gap:12,justifyContent:"flex-end"}}>
+            <button onClick={()=>setResetLandlord(null)} style={T.sec}>Cancel</button>
+            <button onClick={doResetPw} style={T.pri}>Reset Password</button>
+          </div>
+        </>)}
+      </Modal>
 
       {tab==="properties"&&(
         <Card>
@@ -1990,7 +2160,7 @@ function ProfilePage({ ctx }) {
             <div style={{fontWeight:700,fontSize:16,color:"#1B2B4B",marginBottom:6}}>Export Backup</div>
             <div style={{fontSize:13,color:"#4A5568",marginBottom:16,lineHeight:1.6}}>Downloads all your properties, tenancies, payments, certificates, documents and more as a single <code style={{background:"#D4FAE6",padding:"1px 6px",borderRadius:4,fontSize:12}}>.json</code> file.</div>
             <button onClick={async()=>{
-              const keys=["landlords","properties","tenancies","payments","certs","notices","reminders","expenses","inventory","templates","contractors","voids","documents","rtr","inspections","recurring"];
+              const keys=["landlords","properties","tenancies","payments","certs","notices","reminders","expenses","inventory","templates","contractors","voids","documents","rtr","inspections","recurring","maintenance"];
               const data={};
               for(const k of keys) data[k]=(db[k]||[]).filter(x=>x.landlordId===user.id||x.id===user.id);
               const backup={version:"2.0",app:"LandlordPro",exportedAt:today(),exportedBy:user.name,landlordId:user.id,data};
@@ -2026,6 +2196,78 @@ function ProfilePage({ ctx }) {
         </GG>
         <div style={{marginTop:16,padding:"12px 16px",background:"#FFFBEB",borderRadius:10,border:"1px solid #FCD34D",fontSize:13,color:"#92400E"}}>
           ⚠️ <strong>Note:</strong> Uploaded documents (PDFs, images) are stored separately and not included in the JSON backup. Re-upload any documents after a restore.
+        </div>
+      </Card>
+
+      {/* ── CSV IMPORT ──────────────────────────── */}
+      <Card style={{marginTop:24}}>
+        <div style={{fontFamily:"Playfair Display,serif",fontSize:20,fontWeight:700,color:"var(--text)",marginBottom:6}}>CSV Import</div>
+        <p style={{color:"var(--text2)",fontSize:14,marginBottom:20,lineHeight:1.6}}>Import properties or tenancies from a spreadsheet. Download the template, fill it in, then upload it here.</p>
+        <GG cols={2} gap={20}>
+          {/* Properties CSV Import */}
+          <div style={{background:"var(--subtle)",borderRadius:14,padding:18,border:"1px solid var(--border2)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:"var(--text)",marginBottom:6}}>🏢 Properties</div>
+            <div style={{fontSize:13,color:"var(--text2)",marginBottom:12,lineHeight:1.6}}>Columns: <code style={{background:"var(--subtle2)",padding:"1px 5px",borderRadius:4,fontSize:11}}>address, city, postcode, type, bedrooms, monthlyRent</code></div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>{
+                const csv="address,city,postcode,type,bedrooms,monthlyRent\n14 High Street,Manchester,M1 1AA,Semi-Detached,3,1200\n";
+                downloadCSV("properties-template.csv",["address","city","postcode","type","bedrooms","monthlyRent"],[["14 High Street","Manchester","M1 1AA","Semi-Detached","3","1200"]]);
+              }} style={{...T.sec,fontSize:12,padding:"7px 14px"}}>⬇ Template</button>
+              <label style={{cursor:"pointer"}}>
+                <input type="file" accept=".csv" style={{display:"none"}} onChange={e=>{
+                  const file=e.target.files[0]; if(!file)return;
+                  const reader=new FileReader();
+                  reader.onload=ev=>{
+                    const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                    const headers=lines[0].split(',').map(h=>h.trim().toLowerCase());
+                    const imported=lines.slice(1).filter(l=>l.trim()).map(line=>{
+                      const cols=line.split(',');
+                      const get=k=>cols[headers.indexOf(k)]?.trim()||"";
+                      return{id:uid(),landlordId:user.id,address:get("address"),city:get("city"),postcode:get("postcode"),type:get("type")||"Semi-Detached",bedrooms:get("bedrooms"),monthlyRent:get("monthlyrent")||get("monthlyRent"),createdAt:today()};
+                    }).filter(p=>p.address);
+                    if(!imported.length){showToast("No valid rows found in CSV.","error");return;}
+                    save("properties",[...(db.properties||[]),...imported]);
+                    showToast(`✓ Imported ${imported.length} properties!`);
+                  };
+                  reader.readAsText(file);e.target.value="";
+                }}/>
+                <div style={{...T.pri,padding:"7px 14px",fontSize:12,textAlign:"center",borderRadius:10,cursor:"pointer"}}>⬆ Import CSV</div>
+              </label>
+            </div>
+          </div>
+          {/* Tenancies CSV Import */}
+          <div style={{background:"var(--subtle)",borderRadius:14,padding:18,border:"1px solid var(--border2)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:"var(--text)",marginBottom:6}}>👥 Tenancies</div>
+            <div style={{fontSize:13,color:"var(--text2)",marginBottom:12,lineHeight:1.6}}>Columns: <code style={{background:"var(--subtle2)",padding:"1px 5px",borderRadius:4,fontSize:11}}>tenantName, email, phone, propertyAddress, startDate, rentAmount, deposit</code></div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>{downloadCSV("tenancies-template.csv",["tenantName","email","phone","propertyAddress","startDate","rentAmount","deposit"],[["Jane Smith","jane@email.com","07700900000","14 High Street","2024-01-01","1200","1200"]]);}} style={{...T.sec,fontSize:12,padding:"7px 14px"}}>⬇ Template</button>
+              <label style={{cursor:"pointer"}}>
+                <input type="file" accept=".csv" style={{display:"none"}} onChange={e=>{
+                  const file=e.target.files[0]; if(!file)return;
+                  const reader=new FileReader();
+                  reader.onload=ev=>{
+                    const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                    const headers=lines[0].split(',').map(h=>h.trim().toLowerCase());
+                    const get=(cols,k)=>cols[headers.indexOf(k)]?.trim()||"";
+                    const imported=lines.slice(1).filter(l=>l.trim()).map(line=>{
+                      const cols=line.split(',');
+                      const addr=get(cols,"propertyaddress")||get(cols,"propertyaddress");
+                      const prop=(db.properties||[]).find(p=>p.address.toLowerCase()===addr.toLowerCase());
+                      return{id:uid(),landlordId:user.id,propertyId:prop?.id||"",tenantName:get(cols,"tenantname"),tenantEmail:get(cols,"email"),tenantPhone:get(cols,"phone"),startDate:get(cols,"startdate"),rentAmount:get(cols,"rentamount"),depositAmount:get(cols,"deposit"),status:"active",createdAt:today()};
+                    }).filter(t=>t.tenantName);
+                    if(!imported.length){showToast("No valid rows found.","error");return;}
+                    save("tenancies",[...(db.tenancies||[]),...imported]);
+                    showToast(`✓ Imported ${imported.length} tenancies!`);
+                  };
+                  reader.readAsText(file);e.target.value="";
+                }}/>
+                <div style={{...T.pri,padding:"7px 14px",fontSize:12,textAlign:"center",borderRadius:10,cursor:"pointer"}}>⬆ Import CSV</div>
+              </label>
+            </div>
+          </div>
+        </GG>
+        <div style={{marginTop:14,padding:"10px 14px",background:"#EBF4FF",borderRadius:10,border:"1px solid #BEE3F8",fontSize:13,color:"#2B6CB0"}}>
+          💡 For tenancy import, add your properties first so they can be matched by address.
         </div>
       </Card>
     </div>
@@ -3089,6 +3331,748 @@ function printPropertyReport(prop, myData) {
 // ══════════════════════════════════════════════════════════════════
 // MAIN APP
 // ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// RENTAL STATEMENT GENERATOR
+// ══════════════════════════════════════════════════════════════════
+function generateRentalStatement({ tenancy, payments, prop, landlord, fromDate, toDate }) {
+  const filtered = [...payments]
+    .filter(p => {
+      const d = new Date(p.dueDate);
+      const from = fromDate ? new Date(fromDate) : new Date("2000-01-01");
+      const to   = toDate   ? new Date(toDate)   : new Date("2100-01-01");
+      return d >= from && d <= to;
+    })
+    .sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+  // Build ledger rows with running balance
+  const rows = [];
+  let balance = 0;
+  filtered.forEach(p => {
+    balance += Number(p.amount||0);
+    rows.push({ date:p.dueDate, desc:"Rent Due", debit:Number(p.amount||0), credit:0, balance });
+    if (p.status==="paid" && p.paidDate) {
+      balance -= Number(p.amount||0);
+      rows.push({ date:p.paidDate, desc:"Payment Received", debit:0, credit:Number(p.amount||0), balance });
+    }
+  });
+
+  const totalDue  = filtered.reduce((s,p)=>s+Number(p.amount||0),0);
+  const totalPaid = filtered.filter(p=>p.status==="paid").reduce((s,p)=>s+Number(p.amount||0),0);
+  const outstanding = totalDue - totalPaid;
+  const periodLabel = `${fromDate?fmt(fromDate):"All time"} – ${toDate?fmt(toDate):fmt(today())}`;
+
+  const row = (cells,bold=false) =>
+    `<tr>${cells.map(c=>`<td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px;${bold?"font-weight:700;":""}">${c}</td>`).join("")}</tr>`;
+
+  const html = `<!DOCTYPE html><html><head><title>Rental Statement — ${tenancy.tenantName}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a1a;padding:36px;max-width:820px;margin:auto}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:3px solid #142B5A}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo-icon{width:48px;height:48px;background:linear-gradient(135deg,#142B5A,#2D5BE3);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;color:white}
+  .logo-text{font-size:22px;font-weight:800;color:#142B5A}
+  .logo-sub{font-size:10px;color:#6B7C93;font-weight:600;letter-spacing:2px;text-transform:uppercase}
+  .stamp{text-align:right}
+  .stamp h2{font-size:18px;font-weight:800;color:#142B5A;margin-bottom:4px}
+  .stamp p{color:#6B7C93;font-size:11px}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px}
+  .info-box{background:#F8FAFD;border-radius:10px;padding:14px 16px;border-left:3px solid #2D5BE3}
+  .info-box h4{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6B7C93;margin-bottom:8px}
+  .info-box p{font-size:13px;line-height:1.8;color:#1a1a1a}
+  .info-box strong{color:#142B5A}
+  .period-bar{background:linear-gradient(135deg,#142B5A,#2D5BE3);color:white;border-radius:10px;padding:14px 20px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center}
+  .period-bar span{font-size:12px;opacity:.8}
+  .period-bar strong{font-size:14px}
+  table{width:100%;border-collapse:collapse;margin-bottom:20px}
+  thead{background:#142B5A;color:white}
+  thead th{padding:10px 12px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+  thead th:last-child,thead th:nth-child(3),thead th:nth-child(4){text-align:right}
+  td:last-child,td:nth-child(3),td:nth-child(4){text-align:right}
+  .credit{color:#2AAE7F}
+  .debit{color:#E53E3E}
+  .balance-neg{color:#E53E3E;font-weight:700}
+  .balance-ok{color:#2AAE7F;font-weight:700}
+  .summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:28px}
+  .summary-box{border-radius:10px;padding:14px 16px;text-align:center}
+  .summary-box .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+  .summary-box .val{font-size:22px;font-weight:800}
+  .footer{border-top:1px solid #eee;padding-top:16px;display:flex;justify-content:space-between;color:#999;font-size:10px}
+  @media print{body{padding:16px}.period-bar{-webkit-print-color-adjust:exact;print-color-adjust:exact}thead{-webkit-print-color-adjust:exact;print-color-adjust:exact}.logo-icon{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">🏠</div>
+    <div><div class="logo-text">LandlordPro</div><div class="logo-sub">UK Property Management</div></div>
+  </div>
+  <div class="stamp">
+    <h2>RENTAL STATEMENT</h2>
+    <p>Generated: ${fmt(today())}</p>
+    <p>Reference: ${tenancy.id.slice(-8).toUpperCase()}</p>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="info-box">
+    <h4>Landlord</h4>
+    <p><strong>${landlord.name||"–"}</strong>${landlord.company?`<br/>${landlord.company}`:""}<br/>
+    ${landlord.email||""}<br/>${landlord.phone||""}</p>
+  </div>
+  <div class="info-box">
+    <h4>Tenant</h4>
+    <p><strong>${tenancy.tenantName}</strong><br/>
+    ${prop?.address||"–"}${prop?.postcode?", "+prop.postcode:""}<br/>
+    ${tenancy.tenantEmail||""}<br/>${tenancy.tenantPhone||""}</p>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="info-box">
+    <h4>Tenancy Details</h4>
+    <p>Start date: <strong>${fmt(tenancy.startDate)}</strong><br/>
+    End date: <strong>${tenancy.endDate?fmt(tenancy.endDate):"Periodic"}</strong><br/>
+    Monthly rent: <strong>${gbp(tenancy.rentAmount)}</strong><br/>
+    Deposit: <strong>${gbp(tenancy.depositAmount||0)}</strong><br/>
+    Scheme: <strong>${tenancy.depositScheme||"–"}</strong></p>
+  </div>
+  <div class="info-box">
+    <h4>Property</h4>
+    <p>${prop?.address||"–"}<br/>
+    ${prop?.city||""}${prop?.postcode?", "+prop.postcode:""}<br/>
+    Type: <strong>${prop?.type||"–"}</strong><br/>
+    Bedrooms: <strong>${prop?.bedrooms||"–"}</strong>${tenancy.room?`<br/>Room: <strong>${tenancy.room}</strong>`:""}
+    </p>
+  </div>
+</div>
+
+<div class="period-bar">
+  <div><span>Statement Period</span><br/><strong>${periodLabel}</strong></div>
+  <div style="text-align:right"><span>Outstanding Balance</span><br/><strong style="font-size:18px">${gbp(outstanding)}</strong></div>
+</div>
+
+<table>
+  <thead><tr><th>Date</th><th>Description</th><th>Rent Due (Dr)</th><th>Payment (Cr)</th><th>Balance</th></tr></thead>
+  <tbody>
+    ${rows.length===0
+      ? `<tr><td colspan="5" style="padding:20px;text-align:center;color:#999">No transactions in this period</td></tr>`
+      : rows.map(r=>`<tr style="background:${r.debit>0?"#fff8f8":"#f8fff8"}">
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px">${fmt(r.date)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px">${r.desc}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px;text-align:right;color:#E53E3E;font-weight:${r.debit>0?600:400}">${r.debit>0?gbp(r.debit):"–"}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px;text-align:right;color:#2AAE7F;font-weight:${r.credit>0?600:400}">${r.credit>0?gbp(r.credit):"–"}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:12px;text-align:right;font-weight:700;color:${r.balance>0?"#E53E3E":r.balance<0?"#C53030":"#2AAE7F"}">${gbp(r.balance)}</td>
+        </tr>`).join("")}
+  </tbody>
+</table>
+
+<div class="summary">
+  <div class="summary-box" style="background:#EBF4FF">
+    <div class="lbl" style="color:#2B6CB0">Total Rent Due</div>
+    <div class="val" style="color:#142B5A">${gbp(totalDue)}</div>
+  </div>
+  <div class="summary-box" style="background:#D4FAE6">
+    <div class="lbl" style="color:#1A7A4A">Total Paid</div>
+    <div class="val" style="color:#2AAE7F">${gbp(totalPaid)}</div>
+  </div>
+  <div class="summary-box" style="background:${outstanding>0?"#FDE8E8":"#D4FAE6"}">
+    <div class="lbl" style="color:${outstanding>0?"#C53030":"#1A7A4A"}">Outstanding</div>
+    <div class="val" style="color:${outstanding>0?"#E53E3E":"#2AAE7F"}">${gbp(outstanding)}</div>
+  </div>
+</div>
+
+<div class="footer">
+  <span>LandlordPro · landlordpro.co.uk · This statement was computer generated</span>
+  <span>Page 1 of 1 · ${fmt(today())}</span>
+</div>
+</body></html>`;
+
+  const w = window.open("","_blank","width=900,height=750");
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => w.print(), 700);
+}
+
+// ── Rental Statement Modal Component ─────────────────────────────
+function RentalStatementModal({ open, onClose, ctx }) {
+  const { myData } = ctx;
+  const { tenancies, payments, properties } = myData;
+  const [selTen, setSelTen] = useState(tenancies[0]?.id||"");
+  const [fromDate, setFromDate] = useState(() => {
+    const d = new Date(); d.setFullYear(d.getFullYear()-1);
+    return d.toISOString().slice(0,10);
+  });
+  const [toDate, setToDate] = useState(today());
+
+  const ten  = tenancies.find(t=>t.id===selTen);
+  const prop = properties.find(p=>p.id===ten?.propertyId);
+  const tenPays = payments.filter(p=>p.tenancyId===selTen);
+
+  const generate = () => {
+    if (!ten) return;
+    generateRentalStatement({
+      tenancy: ten,
+      payments: tenPays,
+      prop,
+      landlord: myData.landlords?.[0] || ctx.user,
+      fromDate,
+      toDate
+    });
+  };
+
+  const totalDue  = tenPays.filter(p=>new Date(p.dueDate)>=new Date(fromDate)&&new Date(p.dueDate)<=new Date(toDate)).reduce((s,p)=>s+Number(p.amount||0),0);
+  const totalPaid = tenPays.filter(p=>p.status==="paid"&&new Date(p.dueDate)>=new Date(fromDate)&&new Date(p.dueDate)<=new Date(toDate)).reduce((s,p)=>s+Number(p.amount||0),0);
+
+  return (
+    <Modal open={open} onClose={onClose} title="Generate Rental Statement" width={560}>
+      <Fld label="Tenant / Tenancy" required>
+        <select value={selTen} onChange={e=>setSelTen(e.target.value)} style={T.sel}>
+          <option value="">-- Select Tenancy --</option>
+          {tenancies.map(t=>{const p=properties.find(x=>x.id===t.propertyId);return(
+            <option key={t.id} value={t.id}>{t.tenantName}{t.room?` (${t.room})`:""} — {p?.address||"–"}</option>
+          );})}
+        </select>
+      </Fld>
+      <GG cols={2}>
+        <Fld label="From Date"><input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={T.inp}/></Fld>
+        <Fld label="To Date"><input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={T.inp}/></Fld>
+      </GG>
+
+      {ten&&(
+        <div style={{background:"var(--subtle)",borderRadius:12,padding:"16px 18px",marginBottom:8,border:"1px solid var(--border2)"}}>
+          <div style={{fontWeight:700,fontSize:13,color:"var(--text)",marginBottom:10}}>Statement Preview</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {[
+              {l:"Tenant",v:ten.tenantName},
+              {l:"Property",v:prop?.address||"–"},
+              {l:"Monthly Rent",v:gbp(ten.rentAmount)},
+              {l:"Transactions",v:`${tenPays.filter(p=>new Date(p.dueDate)>=new Date(fromDate)&&new Date(p.dueDate)<=new Date(toDate)).length} records`},
+              {l:"Total Rent Due",v:gbp(totalDue)},
+              {l:"Outstanding",v:gbp(totalDue-totalPaid)},
+            ].map(x=>(<div key={x.l}><div style={{fontSize:11,color:"var(--text2)",fontWeight:600,marginBottom:2}}>{x.l}</div><div style={{fontWeight:700,color:"var(--text)",fontSize:13}}>{x.v}</div></div>))}
+          </div>
+        </div>
+      )}
+
+      <div style={{background:"#EBF4FF",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#2B6CB0",marginBottom:16,border:"1px solid #BEE3F8"}}>
+        📄 Opens a print-ready statement in a new window. You can print it or save as PDF.
+      </div>
+
+      <div style={{display:"flex",gap:12,justifyContent:"flex-end"}}>
+        <button onClick={onClose} style={T.sec}>Cancel</button>
+        <button onClick={generate} disabled={!selTen} style={{...T.pri,opacity:selTen?1:.5}}>
+          🖨️ Generate Statement
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// PAGE: MAINTENANCE TRACKER
+// ══════════════════════════════════════════════════════════════════
+function MaintenancePage({ctx}){
+  const{myData,db,save,showToast,user,isMobile}=ctx;
+  const maintenance=myData.maintenance||[];
+  const{properties,tenancies,contractors}=myData;
+  const[tab,setTab]=useState("open");
+  const[modal,setModal]=useState(false);
+  const[editing,setEditing]=useState(null);
+  const[expConfirm,setExpConfirm]=useState(null);
+  const blank={propertyId:"",tenancyId:"",title:"",description:"",category:"plumbing",
+               priority:"normal",status:"reported",contractorId:"",reportedDate:today(),
+               scheduledDate:"",completedDate:"",cost:"",notes:""};
+  const[f,setF]=useState(blank);
+  const upd=k=>e=>setF(x=>({...x,[k]:e.target.value}));
+  const propTens=f.propertyId?tenancies.filter(t=>t.propertyId===f.propertyId&&t.status==="active"):[];
+  const openAdd=()=>{setEditing(null);setF({...blank,propertyId:properties[0]?.id||""});setModal(true);};
+  const openEdit=m=>{setEditing(m);setF({...m});setModal(true);};
+  const doSave=()=>{
+    if(!f.propertyId||!f.title){showToast("Property and title required.","error");return;}
+    const m=editing?{...editing,...f}:{...f,id:uid(),landlordId:user.id,createdAt:today()};
+    const u2=editing?(db.maintenance||[]).map(x=>x.id===editing.id?m:x):[...(db.maintenance||[]),m];
+    save("maintenance",u2);setModal(false);showToast(editing?"Updated!":"Job logged!");
+  };
+  const advanceStatus=item=>{
+    const st=MAINT_STATUS.find(s=>s.id===item.status);
+    if(!st||!st.next)return;
+    const updated={...item,status:st.next,...(st.next==="complete"?{completedDate:today()}:{})};
+    save("maintenance",(db.maintenance||[]).map(x=>x.id===item.id?updated:x));
+    if(st.next==="complete"&&item.cost)setExpConfirm(updated);
+    showToast(`Status → ${MAINT_STATUS.find(s=>s.id===st.next)?.label}`);
+  };
+  const createExpense=item=>{
+    const exp={id:uid(),landlordId:item.landlordId,propertyId:item.propertyId,
+      date:item.completedDate||today(),category:"repairs",
+      description:`Maintenance: ${item.title}`,amount:Number(item.cost||0),notes:item.notes||"",createdAt:today()};
+    save("expenses",[...(db.expenses||[]),exp]);
+    setExpConfirm(null);showToast("✓ Expense created from maintenance job");
+  };
+  const doDelete=id=>{save("maintenance",(db.maintenance||[]).filter(m=>m.id!==id));showToast("Deleted.");};
+  const openItems=maintenance.filter(m=>m.status!=="closed");
+  const closedItems=maintenance.filter(m=>m.status==="closed");
+  const urgentCt=maintenance.filter(m=>m.priority==="urgent"&&m.status!=="closed").length;
+  const yearCost=maintenance.filter(m=>m.cost&&(m.completedDate||m.createdAt||"").startsWith(new Date().getFullYear()+"")).reduce((s,m)=>s+Number(m.cost||0),0);
+  const shown=tab==="open"?openItems:tab==="closed"?closedItems:maintenance;
+  return(
+    <div>
+      <PH title="Maintenance Tracker" sub="Log and track property repairs and maintenance jobs"
+        right={<button onClick={openAdd} style={T.pri} disabled={properties.length===0}>+ Log Job</button>}/>
+      <div className="stat-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:20,marginBottom:24}}>
+        <SC label="Open Jobs" value={openItems.length} icon="🛠️" color={openItems.length>0?"#E8A838":"#2AAE7F"}/>
+        <SC label="Urgent" value={urgentCt} icon="🚨" color={urgentCt>0?"#E53E3E":"#2AAE7F"}/>
+        <SC label="Closed This Year" value={closedItems.filter(m=>(m.completedDate||"").startsWith(new Date().getFullYear()+"")).length} icon="✅" color="#2AAE7F"/>
+        <SC label="Repair Cost (Year)" value={gbp(yearCost)} icon="💷" color="#7C3AED"/>
+      </div>
+      <Tabs tabs={[{id:"open",label:`Open (${openItems.length})`},{id:"closed",label:`Closed (${closedItems.length})`},{id:"all",label:`All (${maintenance.length})`}]} active={tab} onChange={setTab}/>
+      <Card>
+        {shown.length===0?(<Empty icon="🛠️" title={tab==="open"?"No open jobs":"No jobs here"} sub={tab==="open"?'Click "+ Log Job" to record a repair or maintenance issue':""}/>):(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {[...shown].sort((a,b)=>{const p={urgent:0,high:1,normal:2,low:3};return(p[a.priority]||2)-(p[b.priority]||2);}).map(m=>{
+              const prop=properties.find(p=>p.id===m.propertyId);
+              const ten=tenancies.find(t=>t.id===m.tenancyId);
+              const con=contractors.find(c=>c.id===m.contractorId);
+              const cat=MAINT_CATS.find(c=>c.id===m.category)||{icon:"🔧",label:"Other"};
+              const pri=MAINT_PRIORITY.find(p=>p.id===m.priority)||MAINT_PRIORITY[2];
+              const st=MAINT_STATUS.find(s=>s.id===m.status)||MAINT_STATUS[0];
+              return(
+                <div key={m.id} style={{background:"var(--subtle)",borderRadius:14,padding:"16px 20px",border:`1px solid ${m.priority==="urgent"?"rgba(229,62,62,.3)":"var(--border2)"}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
+                  <div style={{display:"flex",gap:14,flex:1}}>
+                    <div style={{width:46,height:46,background:pri.color+"20",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{cat.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:700,color:"var(--text)",fontSize:15}}>{m.title}</span>
+                        <span style={{background:pri.color+"20",color:pri.color,padding:"2px 8px",borderRadius:8,fontSize:11,fontWeight:700}}>{pri.label}</span>
+                        <span style={{background:st.color+"20",color:st.color,padding:"2px 8px",borderRadius:8,fontSize:11,fontWeight:700}}>{st.label}</span>
+                      </div>
+                      <div style={{color:"var(--text2)",fontSize:13,marginBottom:4}}>{prop?.address||"–"}{ten?` · ${ten.tenantName}`:""}</div>
+                      {m.description&&<div style={{color:"var(--text3)",fontSize:13,lineHeight:1.5,marginBottom:4}}>{m.description}</div>}
+                      <div style={{display:"flex",gap:14,fontSize:12,color:"var(--text2)",flexWrap:"wrap"}}>
+                        <span>📅 {fmt(m.reportedDate)}</span>
+                        {con&&<span>👷 {con.name}</span>}
+                        {m.cost&&<span style={{color:"#E53E3E",fontWeight:600}}>💷 £{m.cost}</span>}
+                        {m.scheduledDate&&<span>🗓️ {fmt(m.scheduledDate)}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",flexShrink:0}}>
+                    {st.next&&<button onClick={()=>advanceStatus(m)} style={{...T.pri,padding:"6px 14px",fontSize:12,background:st.color}}>→ {MAINT_STATUS.find(s=>s.id===st.next)?.label}</button>}
+                    <button onClick={()=>openEdit(m)} style={{...T.sec,padding:"6px 12px",fontSize:12}}>Edit</button>
+                    <button onClick={()=>doDelete(m.id)} style={T.dan}>Del</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+      <Modal open={modal} onClose={()=>setModal(false)} title={editing?"Edit Maintenance Job":"Log Maintenance Job"} width={620}>
+        <GG cols={2}>
+          <Fld label="Property" required><select value={f.propertyId} onChange={e=>setF(x=>({...x,propertyId:e.target.value,tenancyId:""}))} style={T.sel}><option value="">-- Select --</option>{properties.map(p=><option key={p.id} value={p.id}>{p.address}</option>)}</select></Fld>
+          <Fld label="Tenant"><select value={f.tenancyId||""} onChange={upd("tenancyId")} style={T.sel}><option value="">-- None --</option>{propTens.map(t=><option key={t.id} value={t.id}>{t.tenantName}</option>)}</select></Fld>
+        </GG>
+        <Fld label="Job Title" required><input value={f.title} onChange={upd("title")} placeholder="e.g. Boiler not heating" style={T.inp}/></Fld>
+        <GG cols={2}>
+          <Fld label="Category"><select value={f.category} onChange={upd("category")} style={T.sel}>{MAINT_CATS.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select></Fld>
+          <Fld label="Priority"><select value={f.priority} onChange={upd("priority")} style={{...T.sel,borderColor:MAINT_PRIORITY.find(p=>p.id===f.priority)?.color||""}}>{MAINT_PRIORITY.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select></Fld>
+          <Fld label="Status"><select value={f.status} onChange={upd("status")} style={T.sel}>{MAINT_STATUS.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select></Fld>
+          <Fld label="Assign Contractor"><select value={f.contractorId||""} onChange={upd("contractorId")} style={T.sel}><option value="">-- None --</option>{contractors.map(c=><option key={c.id} value={c.id}>{c.name} ({c.trade})</option>)}</select></Fld>
+          <Fld label="Reported Date"><input type="date" value={f.reportedDate} onChange={upd("reportedDate")} style={T.inp}/></Fld>
+          <Fld label="Scheduled Date"><input type="date" value={f.scheduledDate||""} onChange={upd("scheduledDate")} style={T.inp}/></Fld>
+          <Fld label="Completed Date"><input type="date" value={f.completedDate||""} onChange={upd("completedDate")} style={T.inp}/></Fld>
+          <Fld label="Cost (£)"><input type="number" value={f.cost||""} onChange={upd("cost")} placeholder="0.00" style={T.inp} min="0" step="0.01"/></Fld>
+        </GG>
+        <Fld label="Description"><textarea value={f.description||""} onChange={upd("description")} placeholder="Describe the issue in detail…" style={T.tex}/></Fld>
+        <Fld label="Notes"><textarea value={f.notes||""} onChange={upd("notes")} placeholder="Internal notes, access instructions…" style={{...T.tex,minHeight:60}}/></Fld>
+        <div style={{display:"flex",gap:12,justifyContent:"flex-end",paddingTop:8}}><button onClick={()=>setModal(false)} style={T.sec}>Cancel</button><button onClick={doSave} style={T.pri}>{editing?"Save Changes":"Log Job"}</button></div>
+      </Modal>
+      <Modal open={!!expConfirm} onClose={()=>setExpConfirm(null)} title="Create Expense Entry?" width={420}>
+        {expConfirm&&(<><p style={{color:"var(--text3)",lineHeight:1.7,marginBottom:16}}>This job cost <strong style={{color:"var(--text)"}}>£{expConfirm.cost}</strong>. Create an expense entry automatically?</p>
+          <div style={{background:"var(--subtle)",borderRadius:10,padding:"12px 14px",marginBottom:20,border:"1px solid var(--border2)"}}><div style={{fontWeight:600,color:"var(--text)"}}>{expConfirm.title}</div><div style={{fontSize:13,color:"var(--text2)"}}>Repairs · £{expConfirm.cost}</div></div>
+          <div style={{display:"flex",gap:12,justifyContent:"flex-end"}}><button onClick={()=>setExpConfirm(null)} style={T.sec}>Skip</button><button onClick={()=>createExpense(expConfirm)} style={T.grn}>✓ Create Expense</button></div>
+        </>)}
+      </Modal>
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORTANT CONTACTS DATA
+// ══════════════════════════════════════════════════════════════════
+const CONTACTS = [
+  // 🚨 National Emergencies
+  {cat:"emergency",name:"Emergency Services",phone:"999",desc:"Police, Fire & Ambulance — life-threatening emergencies",icon:"🚨",web:""},
+  {cat:"emergency",name:"Non-Emergency Police",phone:"101",desc:"Report crime, get police advice",icon:"🚔",web:""},
+  {cat:"emergency",name:"NHS Urgent Medical",phone:"111",desc:"Medical advice, urgent but not 999",icon:"🏥",web:"111.nhs.uk"},
+  {cat:"emergency",name:"Gas Emergency (Cadent)",phone:"0800 111 999",desc:"Report gas leaks — 24/7 free",icon:"⛽",web:""},
+  {cat:"emergency",name:"Power Cut Helpline",phone:"105",desc:"Report & get help with power cuts",icon:"⚡",web:"powercut105.com"},
+  {cat:"emergency",name:"Floodline",phone:"0345 988 1188",desc:"Flood warnings, advice & support",icon:"🌊",web:"gov.uk/check-flooding"},
+  {cat:"emergency",name:"National Gas Emergency",phone:"0800 111 999",desc:"Smell gas? Call immediately, 24/7",icon:"🔥",web:""},
+
+  // ⚡ Electricity & Gas Suppliers
+  {cat:"energy",name:"British Gas",phone:"0333 202 9802",desc:"Electricity & Gas supplier",icon:"⚡",web:"britishgas.co.uk"},
+  {cat:"energy",name:"E.ON Next",phone:"0808 501 5200",desc:"Electricity & Gas supplier",icon:"⚡",web:"eonnext.com"},
+  {cat:"energy",name:"EDF Energy",phone:"0333 200 5100",desc:"Electricity & Gas supplier",icon:"⚡",web:"edfenergy.com"},
+  {cat:"energy",name:"Octopus Energy",phone:"0808 164 1088",desc:"Electricity & Gas supplier",icon:"⚡",web:"octopus.energy"},
+  {cat:"energy",name:"OVO Energy",phone:"0330 303 5063",desc:"Electricity & Gas supplier",icon:"⚡",web:"ovoenergy.com"},
+  {cat:"energy",name:"Scottish Power",phone:"0800 027 0072",desc:"Electricity & Gas supplier",icon:"⚡",web:"scottishpower.co.uk"},
+  {cat:"energy",name:"SSE Energy",phone:"0800 980 8558",desc:"Electricity & Gas supplier",icon:"⚡",web:"sse.co.uk"},
+  {cat:"energy",name:"Shell Energy",phone:"0330 094 5800",desc:"Electricity & Gas supplier",icon:"⚡",web:"shellenergy.co.uk"},
+  {cat:"energy",name:"Utilita Energy",phone:"0345 207 2000",desc:"Electricity & Gas supplier",icon:"⚡",web:"utilita.co.uk"},
+  {cat:"energy",name:"Bulb / Octopus",phone:"0300 303 0635",desc:"Electricity & Gas (now Octopus)",icon:"⚡",web:"octopus.energy"},
+
+  // 💧 Water Companies
+  {cat:"water",name:"Thames Water",phone:"0800 316 9800",desc:"London & Thames Valley",icon:"💧",web:"thameswater.co.uk"},
+  {cat:"water",name:"Anglian Water",phone:"03457 145 145",desc:"East of England",icon:"💧",web:"anglianwater.co.uk"},
+  {cat:"water",name:"Severn Trent Water",phone:"0800 783 4444",desc:"Midlands",icon:"💧",web:"stwater.co.uk"},
+  {cat:"water",name:"United Utilities",phone:"0345 672 3723",desc:"North West England",icon:"💧",web:"unitedutilities.com"},
+  {cat:"water",name:"Yorkshire Water",phone:"0345 124 2424",desc:"Yorkshire",icon:"💧",web:"yorkshirewater.com"},
+  {cat:"water",name:"Wessex Water",phone:"0345 600 3600",desc:"South West England",icon:"💧",web:"wessexwater.co.uk"},
+  {cat:"water",name:"South West Water",phone:"0344 346 2020",desc:"Devon, Cornwall & Dorset",icon:"💧",web:"southwestwater.co.uk"},
+  {cat:"water",name:"Southern Water",phone:"0330 303 0368",desc:"South East England",icon:"💧",web:"southernwater.co.uk"},
+  {cat:"water",name:"Welsh Water",phone:"0800 052 0130",desc:"Wales",icon:"💧",web:"dwrcymru.com"},
+  {cat:"water",name:"Northumbrian Water",phone:"0345 717 1100",desc:"North East England",icon:"💧",web:"nwl.co.uk"},
+  {cat:"water",name:"Affinity Water",phone:"0345 357 2407",desc:"East & South East England",icon:"💧",web:"affinitywater.co.uk"},
+
+  // 🏛️ Regulatory & Government
+  {cat:"government",name:"HMRC Self Assessment",phone:"0300 200 3310",desc:"Tax returns, SA105 property income",icon:"🏛️",web:"gov.uk/government/organisations/hm-revenue-customs"},
+  {cat:"government",name:"HMRC General",phone:"0300 200 3300",desc:"General tax enquiries",icon:"🏛️",web:"hmrc.gov.uk"},
+  {cat:"government",name:"Land Registry",phone:"0300 006 0411",desc:"Property ownership, title registration",icon:"🏛️",web:"gov.uk/land-registry"},
+  {cat:"government",name:"Gas Safe Register",phone:"0800 408 5500",desc:"Check/register Gas Safe engineers",icon:"🔥",web:"gassaferegister.co.uk"},
+  {cat:"government",name:"Health & Safety Executive",phone:"0300 003 1747",desc:"Workplace & property safety",icon:"🏛️",web:"hse.gov.uk"},
+  {cat:"government",name:"Planning Portal",phone:"0303 444 5000",desc:"Planning applications & advice",icon:"🏛️",web:"planningportal.co.uk"},
+  {cat:"government",name:"Valuation Office Agency",phone:"03000 501 501",desc:"Council tax bands, property valuation",icon:"🏛️",web:"gov.uk/government/organisations/valuation-office-agency"},
+  {cat:"government",name:"Deposit Protection Service",phone:"0330 303 0033",desc:"DPS deposit protection",icon:"🏛️",web:"depositprotection.com"},
+  {cat:"government",name:"MyDeposits",phone:"0333 321 9401",desc:"Tenancy deposit protection",icon:"🏛️",web:"mydeposits.co.uk"},
+  {cat:"government",name:"Tenancy Deposit Scheme",phone:"0300 037 1000",desc:"TDS deposit protection",icon:"🏛️",web:"tenancydepositscheme.com"},
+  {cat:"government",name:"NICEIC (Electrical)",phone:"0333 015 6625",desc:"Find registered electricians",icon:"⚡",web:"niceic.com"},
+  {cat:"government",name:"Housing Ombudsman",phone:"0300 111 3000",desc:"Complaints about social landlords",icon:"🏛️",web:"housing-ombudsman.org.uk"},
+  {cat:"government",name:"Local Govt Ombudsman",phone:"0300 061 0614",desc:"Complaints about councils",icon:"🏛️",web:"lgo.org.uk"},
+
+  // 👤 Tenant Support & Advice
+  {cat:"tenant",name:"Citizens Advice",phone:"0800 144 8848",desc:"Free advice on housing, debt, benefits",icon:"👤",web:"citizensadvice.org.uk"},
+  {cat:"tenant",name:"Shelter",phone:"0808 800 4444",desc:"Housing advice & homelessness support",icon:"🏠",web:"shelter.org.uk"},
+  {cat:"tenant",name:"National Debtline",phone:"0808 808 4000",desc:"Free debt advice for tenants",icon:"💰",web:"nationaldebtline.org"},
+  {cat:"tenant",name:"StepChange Debt Charity",phone:"0800 138 1111",desc:"Free debt management advice",icon:"💰",web:"stepchange.org"},
+  {cat:"tenant",name:"Samaritans",phone:"116 123",desc:"24/7 emotional support",icon:"💛",web:"samaritans.org"},
+  {cat:"tenant",name:"Domestic Abuse Helpline",phone:"0808 2000 247",desc:"National domestic abuse helpline — 24/7",icon:"🛡️",web:"nationaldahelpline.org.uk"},
+  {cat:"tenant",name:"Turn2Us (Benefits)",phone:"0808 802 2000",desc:"Benefits eligibility & grants",icon:"👤",web:"turn2us.org.uk"},
+  {cat:"tenant",name:"Mind (Mental Health)",phone:"0300 123 3393",desc:"Mental health advice & support",icon:"💛",web:"mind.org.uk"},
+
+  // 🏙️ Major City Councils
+  {cat:"council",name:"Birmingham City Council",phone:"0121 303 1111",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"birmingham.gov.uk"},
+  {cat:"council",name:"Leeds City Council",phone:"0113 222 4444",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"leeds.gov.uk"},
+  {cat:"council",name:"Manchester City Council",phone:"0161 234 5000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"manchester.gov.uk"},
+  {cat:"council",name:"Liverpool City Council",phone:"0151 233 3000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"liverpool.gov.uk"},
+  {cat:"council",name:"Sheffield City Council",phone:"0114 273 4567",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"sheffield.gov.uk"},
+  {cat:"council",name:"Bristol City Council",phone:"0117 922 2000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"bristol.gov.uk"},
+  {cat:"council",name:"Nottingham City Council",phone:"0115 915 5555",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"nottinghamcity.gov.uk"},
+  {cat:"council",name:"Leicester City Council",phone:"0116 454 1000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"leicester.gov.uk"},
+  {cat:"council",name:"Coventry City Council",phone:"024 7683 3333",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"coventry.gov.uk"},
+  {cat:"council",name:"Newcastle City Council",phone:"0191 278 7878",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"newcastle.gov.uk"},
+  {cat:"council",name:"Tower Hamlets",phone:"020 7364 5000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"towerhamlets.gov.uk"},
+  {cat:"council",name:"Hackney Council",phone:"020 8356 3000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"hackney.gov.uk"},
+  {cat:"council",name:"Southwark Council",phone:"020 7525 5000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"southwark.gov.uk"},
+  {cat:"council",name:"Lambeth Council",phone:"020 7926 1000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"lambeth.gov.uk"},
+  {cat:"council",name:"Salford City Council",phone:"0161 794 4711",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"salford.gov.uk"},
+  {cat:"council",name:"Cardiff Council",phone:"029 2087 2087",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"cardiff.gov.uk"},
+  {cat:"council",name:"Edinburgh City Council",phone:"0131 200 2000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"edinburgh.gov.uk"},
+  {cat:"council",name:"Glasgow City Council",phone:"0141 287 2000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"glasgow.gov.uk"},
+  {cat:"council",name:"Wigan Council",phone:"01942 244 991",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"wigan.gov.uk"},
+  {cat:"council",name:"Trafford Council",phone:"0161 912 2000",desc:"Housing, planning, HMO licensing",icon:"🏙️",web:"trafford.gov.uk"},
+
+  // 🛡️ Insurance & Financial
+  {cat:"insurance",name:"Financial Ombudsman",phone:"0800 023 4567",desc:"Complaints about financial services",icon:"🛡️",web:"financial-ombudsman.org.uk"},
+  {cat:"insurance",name:"Financial Conduct Authority",phone:"0800 111 6768",desc:"Report financial fraud, check firms",icon:"🛡️",web:"fca.org.uk"},
+  {cat:"insurance",name:"Association of British Insurers",phone:"020 7600 3333",desc:"Insurance advice & member firms",icon:"🛡️",web:"abi.org.uk"},
+  {cat:"insurance",name:"BIBA (Insurance Brokers)",phone:"0370 950 1790",desc:"Find regulated insurance brokers",icon:"🛡️",web:"biba.org.uk"},
+  {cat:"insurance",name:"Money Helper (MaPS)",phone:"0800 138 7777",desc:"Free financial guidance",icon:"💰",web:"moneyhelper.org.uk"},
+  {cat:"insurance",name:"Flood Re",phone:"020 7256 2891",desc:"Flood insurance scheme for high-risk properties",icon:"🌊",web:"floodre.co.uk"},
+];
+
+const CONTACT_CATS = [
+  {id:"all",      label:"All",             icon:"📋"},
+  {id:"emergency",label:"Emergencies",     icon:"🚨"},
+  {id:"energy",   label:"Energy",          icon:"⚡"},
+  {id:"water",    label:"Water",           icon:"💧"},
+  {id:"government",label:"Regulatory",    icon:"🏛️"},
+  {id:"tenant",   label:"Tenant Support",  icon:"👤"},
+  {id:"council",  label:"City Councils",   icon:"🏙️"},
+  {id:"insurance",label:"Insurance",       icon:"🛡️"},
+];
+
+// ══════════════════════════════════════════════════════════════════
+// PAGE: IMPORTANT CONTACTS
+// ══════════════════════════════════════════════════════════════════
+function ContactsPage({ctx}){
+  const{isMobile}=ctx;
+  const[selCat,setSelCat]=useState("all");
+  const[search,setSearch]=useState("");
+  const[copied,setCopied]=useState("");
+
+  const filtered=CONTACTS.filter(c=>{
+    const catOk=selCat==="all"||c.cat===selCat;
+    const searchOk=!search||c.name.toLowerCase().includes(search.toLowerCase())||c.desc.toLowerCase().includes(search.toLowerCase())||c.phone.includes(search);
+    return catOk&&searchOk;
+  });
+
+  const copyNum=num=>{
+    navigator.clipboard?.writeText(num).then(()=>{setCopied(num);setTimeout(()=>setCopied(""),2000);});
+  };
+
+  const catColors={emergency:"#E53E3E",energy:"#E8A838",water:"#2D5BE3",government:"#1A7A4A",tenant:"#7C3AED",council:"#0891B2",insurance:"#2AAE7F"};
+
+  return(
+    <div>
+      <PH title="📞 Important Contacts" sub="Emergency numbers, utilities, councils and regulatory bodies"/>
+
+      {/* Emergency Banner */}
+      <div style={{background:"linear-gradient(135deg,#C53030,#E53E3E)",borderRadius:14,padding:"16px 22px",marginBottom:24,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <div style={{fontSize:32}}>🚨</div>
+          <div><div style={{fontWeight:800,color:"white",fontSize:18}}>Emergency? Call 999</div><div style={{color:"rgba(255,255,255,.8)",fontSize:13}}>Police · Fire · Ambulance · Gas Leak</div></div>
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <a href="tel:999" style={{background:"white",color:"#C53030",fontWeight:800,fontSize:16,padding:"10px 24px",borderRadius:10,textDecoration:"none"}}>📞 999</a>
+          <a href="tel:101" style={{background:"rgba(255,255,255,.15)",color:"white",fontWeight:700,fontSize:14,padding:"10px 20px",borderRadius:10,textDecoration:"none",border:"1px solid rgba(255,255,255,.3)"}}>101</a>
+          <a href="tel:111" style={{background:"rgba(255,255,255,.15)",color:"white",fontWeight:700,fontSize:14,padding:"10px 20px",borderRadius:10,textDecoration:"none",border:"1px solid rgba(255,255,255,.3)"}}>111</a>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div style={{marginBottom:18}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍  Search contacts, numbers or descriptions…"
+          style={{...T.inp,fontSize:15,padding:"12px 18px"}}/>
+      </div>
+
+      {/* Category Filter */}
+      <div style={{display:"flex",gap:8,marginBottom:24,flexWrap:"wrap"}}>
+        {CONTACT_CATS.map(c=>(
+          <button key={c.id} onClick={()=>setSelCat(c.id)} style={{padding:"8px 16px",borderRadius:20,border:`1.5px solid ${selCat===c.id?(catColors[c.id]||"#2D5BE3"):"var(--border)"}`,background:selCat===c.id?(catColors[c.id]||"#2D5BE3"):"var(--card)",color:selCat===c.id?"white":"var(--text)",cursor:"pointer",fontSize:13,fontWeight:selCat===c.id?700:500,transition:"all .15s"}}>
+            {c.icon} {c.label} {selCat===c.id?`(${filtered.length})`:""}
+          </button>
+        ))}
+      </div>
+
+      {/* Contact Cards */}
+      {filtered.length===0?(<Card><Empty icon="🔍" title="No contacts found" sub="Try a different search term or category"/></Card>):(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14}}>
+          {filtered.map((c,i)=>(
+            <div key={i} style={{background:"var(--card)",borderRadius:14,padding:"16px 18px",border:"1px solid var(--border2)",boxShadow:"var(--card-shadow)",display:"flex",flexDirection:"column",gap:10}}>
+              <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
+                <div style={{width:42,height:42,background:(catColors[c.cat]||"#2D5BE3")+"18",borderRadius:11,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{c.icon}</div>
+                <div style={{flex:1,overflow:"hidden"}}>
+                  <div style={{fontWeight:700,color:"var(--text)",fontSize:14,lineHeight:1.3}}>{c.name}</div>
+                  <div style={{color:"var(--text2)",fontSize:12,marginTop:3,lineHeight:1.4}}>{c.desc}</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <a href={`tel:${c.phone.replace(/\s/g,"")}`} style={{flex:1,background:(catColors[c.cat]||"#2D5BE3")+"15",color:catColors[c.cat]||"#2D5BE3",fontWeight:800,fontSize:15,padding:"9px 14px",borderRadius:10,textDecoration:"none",textAlign:"center",border:`1px solid ${catColors[c.cat]||"#2D5BE3"}30`}}>
+                  📞 {c.phone}
+                </a>
+                <button onClick={()=>copyNum(c.phone)} title="Copy number" style={{...T.sec,padding:"9px 12px",fontSize:13,flexShrink:0,color:copied===c.phone?"#2AAE7F":"var(--text)"}}>
+                  {copied===c.phone?"✓":"⧉"}
+                </button>
+                {c.web&&<a href={`https://${c.web}`} target="_blank" rel="noreferrer" style={{...T.sec,padding:"9px 12px",fontSize:13,flexShrink:0,textDecoration:"none"}}>🔗</a>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{marginTop:24,padding:"14px 18px",background:"var(--subtle)",borderRadius:12,border:"1px solid var(--border2)",fontSize:13,color:"var(--text2)",lineHeight:1.7}}>
+        ℹ️ Phone numbers correct as of 2025. Always verify contact details on the official website before calling. Numbers marked as freephone (0800) are free from UK mobiles and landlines.
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PAGE: RENTERS RIGHTS BILL
+// ══════════════════════════════════════════════════════════════════
+function RentersRightsPage({ctx}){
+  const{isMobile}=ctx;
+  const[tab,setTab]=useState("overview");
+
+  const Section=({title,children})=>(<div style={{marginBottom:24}}><div style={{fontFamily:"Playfair Display,serif",fontSize:17,fontWeight:700,color:"var(--text)",marginBottom:14,paddingBottom:8,borderBottom:"2px solid #2D5BE3",display:"inline-block"}}>{title}</div>{children}</div>);
+
+  const InfoRow=({icon,title,text,color="#2D5BE3"})=>(<div style={{display:"flex",gap:14,padding:"14px 16px",background:"var(--subtle)",borderRadius:12,border:"1px solid var(--border2)",marginBottom:10}}><div style={{fontSize:24,flexShrink:0}}>{icon}</div><div><div style={{fontWeight:700,color,fontSize:14,marginBottom:4}}>{title}</div><div style={{color:"var(--text3)",fontSize:13,lineHeight:1.7}}>{text}</div></div></div>);
+
+  const Tag=({text,color})=>(<span style={{background:color+"20",color,fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:8,marginRight:6}}>{text}</span>);
+
+  return(
+    <div>
+      <PH title="🏛️ Renters' Rights Bill" sub="Complete guide for UK landlords — what's changing and when"/>
+
+      {/* Hero banner */}
+      <div style={{background:"linear-gradient(160deg,#080F1E,#142B5A)",borderRadius:20,padding:"28px 32px",marginBottom:28}}>
+        <div style={{display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
+          <div style={{flex:1}}>
+            <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+              <Tag text="Currently in Parliament" color="#E8A838"/>
+              <Tag text="Expected Royal Assent 2025" color="#2AAE7F"/>
+              <Tag text="England Only" color="#2D5BE3"/>
+            </div>
+            <h2 style={{fontFamily:"Playfair Display,serif",fontSize:24,fontWeight:700,color:"white",marginBottom:10}}>The biggest change to private renting in a generation</h2>
+            <p style={{color:"rgba(255,255,255,.7)",fontSize:14,lineHeight:1.8}}>Introduced by the Labour government in September 2024, the Renters' Rights Bill will fundamentally change how private tenancies work in England. Every landlord needs to understand what's changing and prepare now.</p>
+          </div>
+          <div style={{background:"rgba(232,168,56,.15)",borderRadius:14,padding:"16px 20px",border:"1px solid rgba(232,168,56,.25)",minWidth:200}}>
+            <div style={{color:"#E8A838",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"1px",marginBottom:12}}>Key Dates</div>
+            {[{d:"Sep 2024",t:"Bill introduced"},{d:"Early 2025",t:"Committee stage"},{d:"Mid 2025",t:"Expected Royal Assent"},{d:"After Assent",t:"Phased implementation"}].map(x=>(<div key={x.d} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.08)",fontSize:12}}><span style={{color:"#E8A838",fontWeight:600}}>{x.d}</span><span style={{color:"rgba(255,255,255,.7)"}}>{x.t}</span></div>))}
+          </div>
+        </div>
+      </div>
+
+      <Tabs tabs={[{id:"overview",label:"Overview"},{id:"abolished",label:"What's Abolished"},{id:"new_rules",label:"New Rules"},{id:"s8",label:"New S.8 Grounds"},{id:"checklist",label:"Landlord Checklist"}]} active={tab} onChange={setTab}/>
+
+      {/* OVERVIEW */}
+      {tab==="overview"&&(<div>
+        <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:16,marginBottom:24}}>
+          {[
+            {icon:"🚫",title:"Section 21 Abolished",desc:"'No-fault' evictions will be banned. You must have a valid Section 8 reason to end a tenancy.",color:"#E53E3E"},
+            {icon:"🔄",title:"Periodic Tenancies Only",desc:"Fixed-term tenancies will be abolished. All tenancies become rolling periodic from day one.",color:"#E8A838"},
+            {icon:"🐕",title:"Right to Request Pets",desc:"Tenants gain the right to request a pet. You can only refuse with good reason.",color:"#2AAE7F"},
+            {icon:"📋",title:"Landlord Register",desc:"A new Private Rented Sector Database will require all landlords to register.",color:"#2D5BE3"},
+            {icon:"⚖️",title:"New Ombudsman",desc:"A mandatory Private Rented Sector Ombudsman — all landlords must join.",color:"#7C3AED"},
+            {icon:"🏠",title:"Decent Homes Standard",desc:"The Decent Homes Standard will apply to the private rented sector for the first time.",color:"#0891B2"},
+            {icon:"💷",title:"Rent Increases",desc:"Rent can only be increased once per year, with 2 months' notice. No rent review clauses.",color:"#C05621"},
+            {icon:"🚫",title:"No DSS/Children Bans",desc:"Blanket bans on DSS tenants (Housing Benefit) and families with children will be illegal.",color:"#E53E3E"},
+          ].map(x=>(<div key={x.title} style={{background:"var(--card)",borderRadius:14,padding:"16px 18px",border:`1px solid ${x.color}25`,boxShadow:"var(--card-shadow)"}}>
+            <div style={{fontSize:24,marginBottom:8}}>{x.icon}</div>
+            <div style={{fontWeight:700,color:x.color,fontSize:14,marginBottom:6}}>{x.title}</div>
+            <div style={{color:"var(--text3)",fontSize:13,lineHeight:1.6}}>{x.desc}</div>
+          </div>))}
+        </div>
+        <div style={{background:"#EBF4FF",borderRadius:12,padding:"14px 18px",border:"1px solid #BEE3F8",color:"#2B6CB0",fontSize:13,lineHeight:1.7}}>
+          ℹ️ This page is for guidance only. The Bill is still passing through Parliament and details may change. Always consult a solicitor or NRLA for legal advice.
+        </div>
+      </div>)}
+
+      {/* WHAT'S ABOLISHED */}
+      {tab==="abolished"&&(<div>
+        <Section title="What Is Being Abolished">
+          <InfoRow icon="🚫" color="#E53E3E" title="Section 21 'No-Fault' Evictions"
+            text="The most significant change. You will no longer be able to serve a Section 21 notice to end a tenancy without giving a reason. This applies to all tenancies — existing and new — from a date after Royal Assent. You will need to use Section 8 with a valid ground."/>
+          <InfoRow icon="📅" color="#E53E3E" title="Fixed-Term Tenancies"
+            text="Assured Shorthold Tenancies with fixed terms will be abolished. All tenancies become periodic (month-to-month or week-to-week) from the start. Tenants can leave with 2 months' notice at any time."/>
+          <InfoRow icon="🚷" color="#E53E3E" title="Blanket DSS/Benefit Bans"
+            text="Advertising or enforcing blanket bans on Housing Benefit recipients (DSS) or families with children will be illegal. Each application must be assessed individually."/>
+          <InfoRow icon="📈" color="#E53E3E" title="Multiple Rent Increases Per Year"
+            text="Rent can only be increased once every 12 months. Rent review clauses in tenancy agreements that allow more frequent increases will be unenforceable."/>
+          <InfoRow icon="❌" color="#E53E3E" title="Tenant's Right to Challenge Rent Restricted"
+            text="Currently tenants can challenge rent increases at tribunal. The Bill strengthens this — tenants can challenge any in-tenancy rent increase, with tribunals unable to set rent above the landlord's proposed figure."/>
+        </Section>
+      </div>)}
+
+      {/* NEW RULES */}
+      {tab==="new_rules"&&(<div>
+        <Section title="New Landlord Obligations">
+          <InfoRow icon="📋" color="#2D5BE3" title="Private Rented Sector Database (Landlord Register)"
+            text="All landlords must register on a new national database before they can let properties. Non-registration will be a criminal offence. The database will be publicly searchable."/>
+          <InfoRow icon="⚖️" color="#7C3AED" title="PRS Ombudsman — Mandatory Membership"
+            text="All private landlords must join the new Private Rented Sector Ombudsman scheme. Tenants can complain to the Ombudsman, who can order compensation of up to £25,000."/>
+          <InfoRow icon="🏠" color="#0891B2" title="Decent Homes Standard"
+            text="Properties must meet the Decent Homes Standard — currently used in social housing. This covers structural repair, modern facilities, insulation, heating, and safety from serious hazards."/>
+          <InfoRow icon="🐕" color="#2AAE7F" title="Right to Request a Pet"
+            text="Tenants can request to keep a pet. Landlords must respond within 28 days and can only refuse with good reason (e.g., property unsuitable, head lease ban). Landlords can require pet insurance."/>
+          <InfoRow icon="💷" color="#C05621" title="Rent Increases — New Rules"
+            text="Rent increases limited to once per 12 months. Landlords must give 2 months' written notice using a prescribed form. Tenants can challenge increases at First-tier Tribunal. Tribunal cannot set rent above landlord's proposed figure."/>
+          <InfoRow icon="⏱️" color="#2D5BE3" title="Possession Timelines"
+            text="Most Section 8 notice periods are extended. Landlords must wait longer before applying to court in most cases. Anti-social behaviour and serious rent arrears grounds have shorter timelines."/>
+        </Section>
+        <Section title="Tenant New Rights">
+          <InfoRow icon="🚪" color="#2AAE7F" title="Tenants Can Leave With 2 Months' Notice"
+            text="From day one of the tenancy, tenants can serve 2 months' notice to leave. No minimum period before they can leave (unlike current 6-month fixed terms)."/>
+          <InfoRow icon="💧" color="#2AAE7F" title="Awaab's Law Extended"
+            text="Awaab's Law (requiring landlords to fix damp and mould within set timeframes) will be extended from social housing to the private rented sector."/>
+          <InfoRow icon="🛡️" color="#2AAE7F" title="Protection from Retaliatory Eviction"
+            text="Strengthened protections — if a tenant complains about disrepair, a Section 8 Ground 1 (rent arrears) or similar possession claim cannot be used for 6 months."/>
+        </Section>
+      </div>)}
+
+      {/* SECTION 8 GROUNDS */}
+      {tab==="s8"&&(<div>
+        <div style={{background:"#EBF4FF",borderRadius:12,padding:"12px 16px",marginBottom:20,fontSize:13,color:"#2B6CB0",border:"1px solid #BEE3F8"}}>
+          Section 8 will be the ONLY way to end a tenancy after Section 21 is abolished. These grounds are being updated.
+        </div>
+        <Card style={{marginBottom:16}}>
+          <div style={{fontWeight:700,color:"#E53E3E",fontSize:15,marginBottom:14}}>🔴 Mandatory Grounds (Court must grant possession)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[
+              {g:"Ground 1",t:"Landlord wants to move in",d:"Or close family member to live in the property. 4 months' notice. Cannot be used in first 12 months of tenancy."},
+              {g:"Ground 1A",t:"Landlord selling the property",d:"New ground — landlord intends to sell with vacant possession. 4 months' notice. Cannot be used in first 12 months."},
+              {g:"Ground 6",t:"Redevelopment",d:"Landlord requires vacant possession for substantial redevelopment. 4 months' notice."},
+              {g:"Ground 7A",t:"Anti-social behaviour",d:"Serious ASB proven at relevant court or tribunal. 4 weeks' notice."},
+              {g:"Ground 8",t:"Serious rent arrears",d:"3 months' (13 weeks') arrears at time of notice and hearing. 4 weeks' notice."},
+              {g:"Ground 14",t:"Anti-social behaviour",d:"Nuisance, annoyance or illegal use. 2 weeks' notice (immediate in serious cases)."},
+            ].map(x=>(<div key={x.g} style={{padding:"12px 14px",background:"#FFF8F8",borderRadius:10,border:"1px solid #F6B2B2"}}><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:4}}><span style={{background:"#E53E3E",color:"white",fontSize:11,fontWeight:700,padding:"1px 8px",borderRadius:6,flexShrink:0}}>{x.g}</span><span style={{fontWeight:700,color:"#1B2B4B",fontSize:13}}>{x.t}</span></div><div style={{fontSize:12,color:"#6B7C93",lineHeight:1.6}}>{x.d}</div></div>))}
+          </div>
+        </Card>
+        <Card>
+          <div style={{fontWeight:700,color:"#E8A838",fontSize:15,marginBottom:14}}>🟡 Discretionary Grounds (Court decides whether to grant)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[
+              {g:"Ground 10",t:"Some rent arrears",d:"Less than 3 months in arrears. Court has discretion whether to grant."},
+              {g:"Ground 11",t:"Persistent late payment",d:"Tenant persistently delays paying rent, even if not in arrears at hearing."},
+              {g:"Ground 12",t:"Breach of tenancy terms",d:"Tenant has broken any term of the tenancy agreement."},
+              {g:"Ground 13",t:"Damage to property",d:"Deterioration of property or furniture."},
+              {g:"Ground 15",t:"Damage by lodger/visitor",d:"Deterioration caused by a person permitted by the tenant."},
+            ].map(x=>(<div key={x.g} style={{padding:"12px 14px",background:"#FEFCF0",borderRadius:10,border:"1px solid #FBD38D"}}><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:4}}><span style={{background:"#E8A838",color:"#1B2B4B",fontSize:11,fontWeight:700,padding:"1px 8px",borderRadius:6,flexShrink:0}}>{x.g}</span><span style={{fontWeight:700,color:"#1B2B4B",fontSize:13}}>{x.t}</span></div><div style={{fontSize:12,color:"#6B7C93",lineHeight:1.6}}>{x.d}</div></div>))}
+          </div>
+        </Card>
+      </div>)}
+
+      {/* CHECKLIST */}
+      {tab==="checklist"&&(<div>
+        <div style={{background:"linear-gradient(135deg,#2AAE7F18,#2AAE7F08)",borderRadius:14,padding:"16px 20px",marginBottom:20,border:"1px solid #9AE6B4",fontSize:13,color:"var(--text3)",lineHeight:1.7}}>
+          ✅ Use this checklist to prepare your portfolio for the Renters' Rights Bill. Start preparing now — don't wait until it passes.
+        </div>
+        <Card>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[
+              {section:"Immediately",items:[
+                "Review all current tenancy agreements — understand which can still be fixed term",
+                "Stop relying on Section 21 as your exit strategy — plan which Section 8 grounds apply",
+                "Review your ASB response procedures (Ground 14 becomes critical)",
+                "Check rent arrears process — you need 3 months for Ground 8",
+              ]},
+              {section:"Before Royal Assent",items:[
+                "Register with the new PRS Database when it launches (mandatory)",
+                "Join the PRS Ombudsman scheme (mandatory — fines for non-compliance)",
+                "Update tenancy agreements to remove fixed-term clauses",
+                "Add a pet policy section to your standard tenancy agreement",
+                "Review your rent review procedure — ensure you comply with 2-month notice rule",
+                "Remove any blanket DSS/no children language from adverts and applications",
+              ]},
+              {section:"Ongoing — From Implementation",items:[
+                "Serve rent increases using the new prescribed form (to be released by DLUHC)",
+                "Document all legitimate Section 8 grounds carefully before serving notice",
+                "Respond to pet requests within 28 days",
+                "Ensure all properties meet Decent Homes Standard",
+                "Keep records of all communications for Ombudsman compliance",
+                "Maintain the LandlordPro Right to Rent log — this remains mandatory",
+              ]},
+            ].map(s=>(<div key={s.section}>
+              <div style={{fontWeight:700,fontSize:13,color:"var(--text)",marginTop:16,marginBottom:8,background:"var(--subtle2)",padding:"6px 12px",borderRadius:8,display:"inline-block"}}>{s.section}</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {s.items.map((item,i)=>(<div key={i} style={{display:"flex",gap:12,padding:"10px 12px",background:"var(--subtle)",borderRadius:10,border:"1px solid var(--border2)"}}>
+                  <span style={{color:"#2AAE7F",fontWeight:700,flexShrink:0}}>✓</span>
+                  <span style={{fontSize:13,color:"var(--text3)",lineHeight:1.5}}>{item}</span>
+                </div>))}
+              </div>
+            </div>))}
+          </div>
+        </Card>
+        <div style={{marginTop:20,padding:"14px 18px",background:"#EBF4FF",borderRadius:12,border:"1px solid #BEE3F8",fontSize:13,color:"#2B6CB0",lineHeight:1.7}}>
+          📚 <strong>Further Reading:</strong> <a href="https://www.gov.uk/government/collections/renters-reform-bill" target="_blank" rel="noreferrer" style={{color:"#2D5BE3"}}>GOV.UK Renters Reform</a> · <a href="https://www.nrla.org.uk/resources/renters-reform-bill" target="_blank" rel="noreferrer" style={{color:"#2D5BE3"}}>NRLA Guidance</a> · <a href="https://www.shelter.org.uk/professional_resources/legal/renters_reform" target="_blank" rel="noreferrer" style={{color:"#2D5BE3"}}>Shelter Legal</a>
+        </div>
+      </div>)}
+    </div>
+  );
+}
+
 const NAV = [
   {id:"dashboard",  label:"Dashboard",          icon:"⊞"},
   {id:"properties", label:"Properties",          icon:"🏢"},
@@ -3096,10 +4080,13 @@ const NAV = [
   {id:"rent",       label:"Rent Ledger",         icon:"💷"},
   {id:"certs",      label:"Certificates",        icon:"📋"},
   {id:"finances",   label:"Finances",            icon:"📈"},
+  {id:"contacts",   label:"Important Contacts",   icon:"📞"},
+  {id:"renters",    label:"Renters Rights Bill",  icon:"🏛️"},
   {id:"sa105",      label:"SA105 Tax",           icon:"🧾"},
   {id:"voids",      label:"Void Periods",        icon:"🏚️"},
   {id:"inventory",  label:"Inventory",           icon:"📦"},
   {id:"documents",  label:"Documents",           icon:"📁"},
+  {id:"maintenance",label:"Maintenance",         icon:"🛠️"},
   {id:"contractors",label:"Contractors",         icon:"🔧"},
   {id:"calendar",   label:"Calendar",            icon:"🗓️"},
   {id:"templates",  label:"Templates",           icon:"📝"},
@@ -3115,7 +4102,7 @@ export default function App() {
   const [loaded,  setLoaded]  = useState(false);
   const [user,    setUser]    = useState(null);
   const [page,    setPage]    = useState("dashboard");
-  const [db,      setDb]      = useState({landlords:[],properties:[],tenancies:[],payments:[],certs:[],notices:[],reminders:[],expenses:[],inventory:[],templates:[],contractors:[],voids:[],documents:[],rtr:[],inspections:[],recurring:[]});
+  const [db,      setDb]      = useState({landlords:[],properties:[],tenancies:[],payments:[],certs:[],notices:[],reminders:[],expenses:[],inventory:[],templates:[],contractors:[],voids:[],documents:[],rtr:[],inspections:[],recurring:[],maintenance:[]});
   const winW = useWinSize();
   const isMobile = winW < 768;
   const [darkMode,setDarkMode]= useState(()=>{try{return localStorage.getItem("lp_dark")==="1";}catch{return false;}});
@@ -3141,6 +4128,15 @@ export default function App() {
   const save = async (key, arr) => {
     setDb(d=>({...d,[key]:arr}));
     await DB.set(key, arr);
+  };
+
+  const reloadDb = async () => {
+    const keys = ["landlords","properties","tenancies","payments","certs","notices","reminders",
+                  "expenses","inventory","templates","contractors","voids","documents","rtr","inspections","recurring","maintenance"];
+    const r = {};
+    for (const k of keys) r[k] = (await DB.get(k)) || [];
+    setDb(r);
+    showToast("✓ Data refreshed — showing all landlord data");
   };
 
   const showToast = (msg, type="success") => {
@@ -3176,10 +4172,11 @@ export default function App() {
     documents:  (db.documents||[]).filter(d=>d.landlordId===user.id),
     rtr:        (db.rtr||[]).filter(r=>r.landlordId===user.id),
     inspections:(db.inspections||[]).filter(i=>i.landlordId===user.id),
-    recurring:  (db.recurring||[]).filter(r=>r.landlordId===user.id),
+    recurring:   (db.recurring||[]).filter(r=>r.landlordId===user.id),
+    maintenance: (db.maintenance||[]).filter(m=>m.landlordId===user.id),
   };
 
-  const ctx = { user, myData, db, save, showToast, setPage, isMobile, darkMode };
+  const ctx = { user, myData, db, save, reloadDb, showToast, setPage, isMobile, darkMode };
 
   const expCertCount   = myData.certs.filter(c=>{const d=daysTo(c.expiryDate);return d!==null&&d>=0&&d<=30;}).length;
   const expiredCertCount=myData.certs.filter(c=>{const d=daysTo(c.expiryDate);return d!==null&&d<0;}).length;
@@ -3281,10 +4278,13 @@ export default function App() {
           {page==="rent"        && <RentPage         ctx={ctx} />}
           {page==="certs"       && <CertsPage        ctx={ctx} />}
           {page==="finances"    && <FinancesPage     ctx={ctx} />}
+          {page==="contacts"    && <ContactsPage     ctx={ctx} />}
+          {page==="renters"     && <RentersRightsPage ctx={ctx} />}
           {page==="sa105"       && <SA105Page        ctx={ctx} />}
           {page==="voids"       && <VoidsPage        ctx={ctx} />}
           {page==="inventory"   && <InventoryPage    ctx={ctx} />}
           {page==="documents"   && <DocumentsPage    ctx={ctx} />}
+          {page==="maintenance" && <MaintenancePage  ctx={ctx} />}
           {page==="contractors" && <ContractorsPage  ctx={ctx} />}
           {page==="calendar"    && <CalendarPage     ctx={ctx} />}
           {page==="templates"   && <TemplatesPage    ctx={ctx} />}
