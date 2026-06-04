@@ -1,21 +1,15 @@
-{
-  "name": "landlordpro",
-  "private": true,
-  "version": "3.0.0",
-  "description": "UK Private Landlord Management Portal",
-  "type": "module",
-  "scripts": {
-    "dev":     "vite",
-    "build":   "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react":     "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts":  "^2.12.7"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
-    "vite":                 "^5.4.2"
-  }
-}
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="description" content="LandlordPro — Free UK private landlord management software. Track properties, rent, certificates, SA105 tax, Right to Rent and Section 8 notices."/>
+    <meta name="robots" content="noindex"/>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+    <title>LandlordPro — UK Property Management Portal</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
